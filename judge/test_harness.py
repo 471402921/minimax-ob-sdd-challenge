@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from evaluate import collect_evidence, summarize  # noqa: E402
 from ob_client import (  # noqa: E402
     CASE_FAIL,
     CASE_PASS,
@@ -109,13 +110,17 @@ def test_clone_no_credential_persistence() -> None:
         check(".git/config 不含 PAT", SENTINEL_PAT not in config)
         check(".git/config 不含用户名凭证段", "@github.com" not in config, config)
 
-        # 全工作区扫描：任何文件都不该留下 PAT 痕迹
+        # 全工作区扫描：任何文件都不该留下 PAT 痕迹。
+        # 排除 judge/：那是本测试套件自身，源码里就写着 sentinel 字符串，
+        # 扫到属于自指假阳性，不是泄漏。
         leaked = [
             str(p.relative_to(checkout.path))
             for p in checkout.path.rglob("*")
-            if p.is_file() and SENTINEL_PAT in p.read_bytes().decode("utf-8", "ignore")
+            if p.is_file()
+            and "judge" not in p.relative_to(checkout.path).parts
+            and SENTINEL_PAT in p.read_bytes().decode("utf-8", "ignore")
         ]
-        check("工作区无 PAT 残留", not leaked, str(leaked[:3]))
+        check("工作区无 PAT 残留（排除 judge/ 自指）", not leaked, str(leaked[:3]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -361,6 +366,65 @@ def test_host_credential_helper_cannot_hijack() -> None:
                 shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_scope_dir_isolation() -> None:
+    """回归：五家共用 scaffold 仓库，评测必须只扫 minimax/ 子目录。
+
+    2026-10-23 联调发现：选手仓库结构是 dify/ gaode/ minimax/ qoder/ stepfun/
+    五个目录，每家一个。若扫全仓，别家的实现会被算成我方成绩。
+    """
+    print("\n[9] 子目录路由隔离（五家共用 scaffold）")
+
+    from evaluate import DEFAULT_SCOPE_DIR
+
+    check("默认 scope 是 minimax", DEFAULT_SCOPE_DIR == "minimax", DEFAULT_SCOPE_DIR)
+
+    tmp = Path(tempfile.mkdtemp(prefix="ob-judge-scope-"))
+    try:
+        repo = tmp / "repo"
+        for d in ("dify", "gaode", "minimax", "qoder", "stepfun"):
+            (repo / d).mkdir(parents=True)
+            (repo / d / ".gitkeep").write_text("")
+        # 别家目录塞满内容，若扫描越界就会被误认为我方实现
+        (repo / "dify" / "main.py").write_text(
+            "import seekdb, powercontext\nfrom oceanbase import connect\n" * 20
+        )
+        (repo / "dify" / "openspec").mkdir()
+        (repo / "dify" / "openspec" / "spec.md").write_text("# spec\n")
+        (repo / "qoder" / "tests").mkdir()
+        (repo / "qoder" / "tests" / "test_a.py").write_text("def test_x(): pass\n" * 10)
+        subprocess.run(["git", "init", "-q", "."], cwd=repo, check=False,
+                       capture_output=True, timeout=60)
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=False,
+                       capture_output=True, timeout=60)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "init"], cwd=repo, check=False,
+                       capture_output=True, timeout=60)
+
+        scoped = collect_evidence(repo, scope_dir="minimax")
+        check("scope=minimax 时只看到占位文件", scoped["file_count"] == 1,
+              f"实际={scoped['file_count']}")
+        check("scope=minimax 时实体文件数为 0", scoped["substantive_file_count"] == 0)
+        check("scope=minimax 时不把别家 seekdb 代码算成我方",
+              scoped["seekdb_code_file_count"] == 0,
+              str(scoped.get("seekdb_code_files")))
+        check("scope=minimax 时不把别家测试算成我方", scoped["test_file_count"] == 0)
+        check("scope=minimax 时不把别家 spec 算成我方", not scoped["has_spec_material"])
+
+        full = collect_evidence(repo, scope_dir=None)
+        check("不限定 scope 时确实会越界（证明该测试有效）",
+              full["seekdb_code_file_count"] > 0, "全仓扫描竟然也是 0，测试无区分力")
+
+        # 目录不存在时要明确标出，而不是静默当空仓
+        import shutil as _sh
+        _sh.rmtree(repo / "minimax")
+        missing = collect_evidence(repo, scope_dir="minimax")
+        check("scope 目录缺失时明确标记", missing.get("scope_dir_missing") is True)
+        check("scope 目录缺失时 file_count=0", missing["file_count"] == 0)
+        check("摘要里标出 scope 缺失", "缺失" in summarize(missing), summarize(missing))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     print("=" * 62)
     print("OB 判题对接 —— 安全与协议回归测试")
@@ -373,6 +437,7 @@ def main() -> int:
     test_numeric_scoring()
     test_token_never_leaks()
     test_host_credential_helper_cannot_hijack()
+    test_scope_dir_isolation()
 
     print("\n" + "=" * 62)
     if _skips:

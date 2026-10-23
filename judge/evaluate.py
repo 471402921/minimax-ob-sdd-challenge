@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections import Counter
@@ -82,25 +83,56 @@ def _read_head(path: Path, limit: int = 200_000) -> str:
         return ""
 
 
-def collect_evidence(repo: Path, *, commit_id: str = "", branch: str = "") -> dict[str, Any]:
+# 选手作品的子目录。五家赛题共用一个 scaffold 仓库（见 2026-10-23 联调），
+# 每家一个目录：dify/ gaode/ minimax/ qoder/ stepfun/。
+# 评测必须限定在自己的目录，否则会扫到别家内容。
+DEFAULT_SCOPE_DIR = os.environ.get("OB_JUDGE_SCOPE_DIR", "minimax")
+
+
+def collect_evidence(
+    repo: Path,
+    *,
+    commit_id: str = "",
+    branch: str = "",
+    scope_dir: str | None = None,
+) -> dict[str, Any]:
     """采集仓库客观事实。只读，不执行选手代码。
 
     采集的都是**可确定性复核**的东西：文件、依赖声明、git 历史。
     不做语义判断——那部分归 judge()，且需要人工或固定裁判参与。
+
+    ``scope_dir`` 限定只扫该子目录（如 ``minimax``）。为空则扫全仓。
+    git 历史仍取自整个仓库，因为提交行为本身就是工程信号。
     """
+    scope = (scope_dir or "").strip().strip("/")
+    scan_root = repo / scope if scope else repo
+    scope_exists = scan_root.is_dir()
+
     ev: dict[str, Any] = {
         "commit_id": commit_id,
         "branch": branch,
         "repo_path": str(repo),
+        "scope_dir": scope or None,
+        "scope_dir_exists": scope_exists,
     }
+    if scope and not scope_exists:
+        # 目录都没有，后面所有计数都是 0，但仍要留下 git 历史证据
+        ev["scope_dir_missing"] = True
 
-    files = list(_iter_files(repo))
+    files = list(_iter_files(scan_root))
     ev["file_count"] = len(files)
     ev["truncated"] = len(files) >= 20000
+    # .gitkeep 占位不算实际内容
+    ev["substantive_file_count"] = sum(
+        1 for p in files if p.name not in {".gitkeep", ".gitignore", ".keep"}
+    )
 
     ext_counter = Counter(p.suffix.lower() for p in files if p.suffix)
     ev["top_extensions"] = dict(ext_counter.most_common(10))
     ev["code_file_count"] = sum(1 for p in files if p.suffix.lower() in _CODE_EXT)
+
+    # 下方所有路径均以**整个仓库**为基准，这样报告里的路径可直接定位，
+    # 也能看出内容是不是落在 scope 目录里。
 
     # ── git 历史：能看出是不是临时糊出来的提交 ──
     try:
@@ -167,7 +199,7 @@ def collect_evidence(repo: Path, *, commit_id: str = "", branch: str = "") -> di
     ev["powercontext_file_count"] = len(pc_code)
 
     # ── 规格材料与测试 ──
-    top_dirs = {p.name.lower() for p in repo.iterdir() if p.is_dir()} if repo.is_dir() else set()
+    top_dirs = {p.name.lower() for p in scan_root.iterdir() if p.is_dir()} if scan_root.is_dir() else set()
     all_dirs = {p.name.lower() for p in files for p in [p.parent]} if files else set()
     ev["has_spec_material"] = bool(
         {m for m in _SPEC_DIR_MARKERS} & (top_dirs | {d for d in all_dirs if d in _SPEC_DIR_MARKERS})
@@ -193,9 +225,13 @@ def collect_evidence(repo: Path, *, commit_id: str = "", branch: str = "") -> di
 
 def summarize(evidence: dict[str, Any]) -> str:
     """给人看的一行摘要（不含任何凭证）。"""
+    scope = evidence.get("scope_dir")
+    scope_tag = f"scope={scope}{'(缺失)' if evidence.get('scope_dir_missing') else ''} " if scope else ""
     return (
         f"commit={evidence.get('commit_id', '')[:12]} branch={evidence.get('branch')} "
-        f"files={evidence.get('file_count')} code={evidence.get('code_file_count')} "
+        f"{scope_tag}"
+        f"files={evidence.get('file_count')}/实体{evidence.get('substantive_file_count')} "
+        f"code={evidence.get('code_file_count')} "
         f"commits={evidence.get('commit_count')} authors={evidence.get('author_count')} "
         f"seekdb[code={evidence.get('seekdb_code_file_count')},"
         f"doc={evidence.get('seekdb_doc_mentions')},"

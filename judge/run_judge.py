@@ -34,7 +34,15 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from evaluate import Judgement, Verdict, collect_evidence, judge, summarize, write_evidence  # noqa: E402
+from evaluate import (  # noqa: E402
+    DEFAULT_SCOPE_DIR,
+    Judgement,
+    Verdict,
+    collect_evidence,
+    judge,
+    summarize,
+    write_evidence,
+)
 from ob_client import (  # noqa: E402
     FAIL_OTHER,
     OBJudgeClient,
@@ -95,6 +103,7 @@ def process_task(
     runlog: RunLog,
     override: dict[str, Any] | None = None,
     keep_checkout: bool = False,
+    scope_dir: str | None = None,
 ) -> str:
     """处理一条已领取的任务。返回结果描述。
 
@@ -127,7 +136,8 @@ def process_task(
 
         # ── 采集证据 ──
         evidence = collect_evidence(
-            checkout.path, commit_id=checkout.commit_id, branch=checkout.branch
+            checkout.path, commit_id=checkout.commit_id, branch=checkout.branch,
+            scope_dir=scope_dir,
         )
         evidence["task_id"] = task.task_id
         evidence["player"] = task.player
@@ -195,6 +205,7 @@ def run_loop(
     poll_max: float,
     override: dict[str, Any] | None,
     keep_checkout: bool,
+    scope_dir: str | None = None,
 ) -> int:
     processed = 0
     while True:
@@ -223,7 +234,7 @@ def run_loop(
         print(f"[{_now()}] 领到任务 {task.describe()}", flush=True)
         outcome = process_task(
             client, task, mode=mode, workdir=workdir, runlog=runlog,
-            override=override, keep_checkout=keep_checkout,
+            override=override, keep_checkout=keep_checkout, scope_dir=scope_dir,
         )
         processed += 1
         print(f"[{_now()}] {outcome}", flush=True)
@@ -255,6 +266,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="保留选手仓库检出（默认评测后删除）")
     p.add_argument("--poll-min", type=float, default=10.0)
     p.add_argument("--poll-max", type=float, default=30.0)
+    p.add_argument("--scope-dir", default=DEFAULT_SCOPE_DIR,
+                   help=f"只评测该子目录（五家共用 scaffold 仓库，默认 {DEFAULT_SCOPE_DIR}）；"
+                        "传空字符串则扫全仓")
     p.add_argument("--local-repo", type=Path,
                    help="只对本地仓库采证据，完全不接触平台")
     args = p.parse_args(argv)
@@ -264,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── 本地模式：不领取、不回传，用于验证证据采集 ──
     if args.local_repo:
-        ev = collect_evidence(args.local_repo.resolve())
+        ev = collect_evidence(args.local_repo.resolve(), scope_dir=args.scope_dir or None)
         print(summarize(ev))
         out = workdir / "local.evidence.json"
         write_evidence(ev, out)
@@ -303,14 +317,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     print(f"[{_now()}] 判题启动 questionId={args.question_id} mode={args.mode} "
+          f"scope={args.scope_dir or '全仓'} "
           f"timeout={args.timeout_minutes}min once={args.once}", flush=True)
-    runlog.write("startup", question_id=args.question_id, mode=args.mode, once=args.once)
+    runlog.write("startup", question_id=args.question_id, mode=args.mode, once=args.once,
+                 scope_dir=args.scope_dir or None)
 
     try:
         return run_loop(
             client, mode=args.mode, workdir=workdir, runlog=runlog, once=args.once,
             poll_min=args.poll_min, poll_max=args.poll_max,
             override=override, keep_checkout=args.keep_checkout,
+            scope_dir=args.scope_dir or None,
         )
     except KeyboardInterrupt:
         runlog.write("interrupted")
