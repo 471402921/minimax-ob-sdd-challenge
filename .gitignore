@@ -1,1 +1,30 @@
 .DS_Store
+
+# ── 判题对接：凭证与内部资料，绝不入库 ─────────────────────────
+# 本仓库是 PUBLIC，任何被 commit 的内容都会公开泄露。
+# MiniMax Token / 选手 GitHub PAT / OB 内部文档只允许留在本地或环境变量中。
+
+# OB 方提供的内部文档（含接口细节，未获授权公开）
+OB方参考/
+
+# 群聊截图：含第三方姓名、群名与对话内容，不应进入公开仓库
+截图/
+
+# 凭证文件（.example 模板可以入库，真实值不行）
+.env
+.env.*
+!.env.example
+secrets/
+*.token
+*_token.txt
+judge/local/
+
+# 判题运行产物：可能含选手私有代码与 PAT 痕迹
+runs/
+workdir/
+*.runlog.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
