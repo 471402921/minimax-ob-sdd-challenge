@@ -135,7 +135,10 @@ class Task:
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
-    """maxScore 文档示例是字符串 "30"，实际可能给数字，两种都兼容。"""
+    """maxScore 文档示例是字符串 "30"，实际下发过 "20"，也可能给数字。
+
+    分值只从响应读取，绝不硬编码——平台已调整过一次（30 → 20）。
+    """
     try:
         return float(value)
     except (TypeError, ValueError):
