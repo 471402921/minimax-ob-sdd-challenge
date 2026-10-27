@@ -28,3 +28,6 @@ workdir/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Serena 语言服务器本地缓存与配置
+.serena/

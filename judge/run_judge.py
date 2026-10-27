@@ -7,8 +7,7 @@
     # 本地验证：不接触平台，只对本地仓库采证据
     python3 judge/run_judge.py --local-repo /path/to/repo
 
-    # 持续判题
-    python3 judge/run_judge.py --mode manual --override-file verdicts.json
+    # 正式判题不要用本脚本，请用 judge/review.py（两阶段人工审阅）
 
 设计约束（来自 OB 文档与判题安全）：
 - **串行领取**。领取有副作用，超额领取会撞上 30 分钟超时重领，
@@ -299,11 +298,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.override_file:
         override = json.loads(args.override_file.read_text(encoding="utf-8"))
 
-    if args.mode == "manual" and not override:
+    if args.mode == "manual":
+        # 死结 + 悬空任务风险：结论必须看到代码后才能下，代码又要领取后才有，
+        # 所以 --override-file 根本无法事先给出；且过去 judge() 的 NotImplementedError
+        # 未被捕获，会在领取后崩溃、回传 0 次、finally 删掉检出目录。
+        # 所以在**领取之前**就拒绝，绝不让它碰平台。
         print(
-            "错误：--mode manual 需要 --override-file 提供人工判定结论。\n"
-            "  rubric 尚未定版，程序拒绝自动判分。\n"
-            "  联调请显式使用 --mode stub-pass / stub-fail / stub-error。",
+            "拒绝运行：--mode manual 已废弃，它会在领取后崩溃并留下悬空任务。\n"
+            "  正式判题请用两阶段流程（先领取留证、人工看过代码、再回传）：\n"
+            "    python3 judge/review.py fetch\n"
+            "    python3 judge/review.py submit --task-id <id> --verdict pass|fail --reason '…'\n"
+            "  联调自测请显式使用 --mode stub-pass / stub-fail / stub-error。",
             file=sys.stderr,
         )
         return 2

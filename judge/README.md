@@ -11,7 +11,7 @@ MiniMax 赛题（`questionId=600077`，子题 `800514`，满分 20）在 OB 数�
 cp judge/.env.example judge/.env     # 填入 OB_JUDGE_TOKEN
 set -a; . judge/.env; set +a         # 载入环境变量
 
-# 自检：49 项安全与协议断言，不需要 token、不接触平台
+# 自检：107 项安全与协议断言，不需要 token、不接触平台
 python3 judge/test_harness.py
 
 # 安全探测：验证连通性/Token/请求格式，保证不领取任何任务
@@ -20,9 +20,52 @@ python3 judge/probe.py
 # 本地验证证据采集，完全不接触平台
 python3 judge/run_judge.py --local-repo /path/to/some/repo
 
-# 联调：走完整往返，处理一条任务后退出
+# 联调（仅限联调！会无条件回传 stub 结果，见下文警告）
 python3 judge/run_judge.py --once --mode stub-pass
 ```
+
+## 🧑‍⚖️ 正式判题：人工审阅两阶段（`review.py`）
+
+> ⚠️ **正式判题不要用 `run_judge.py --mode stub-*`**——stub 会不看代码就回传结果，
+> 而回传不可逆。也**不要用 `--mode manual`**：它要求先给出人工结论，
+> 但结论必须看到代码后才能下、代码又要领取后才有，是个死结；
+> 更糟的是 `judge()` 抛出的 `NotImplementedError` 未被捕获，领取后会崩溃、
+> **回传 0 次、`finally` 还会删掉检出目录**，留下一个悬空任务。
+
+正式判题用 `review.py`，把「领取留证」与「回传」拆成两步，中间留给人：
+
+```bash
+# 阶段 1：领取 → 拉取 → 采证 → 保留检出 → 写 pending → 不回传
+python3 judge/review.py fetch
+
+# （人工审阅 workdir/task-<id>/ 与 workdir/task-<id>.evidence.json）
+
+# 阶段 2：核对版本与时限后回传（回传不可逆，--verdict 没有默认值）
+python3 judge/review.py submit --task-id <id> --verdict pass --reason "…"
+python3 judge/review.py submit --task-id <id> --verdict fail --reason "…"
+python3 judge/review.py submit --task-id <id> --verdict error --fail-msg 4   # 无法评测
+
+# 随时查看还悬着哪些任务、剩多少时间
+python3 judge/review.py list
+```
+
+**铁律与内置守卫**（均有回归测试，且经变异检验确认测试能抓到）：
+
+| 守卫 | 防的事故 |
+| --- | --- |
+| `fetch` 不回传任何东西 | 未经审阅就把结果写进平台 |
+| `fetch` 打印硬截止时间；`pending` 截止早于平台超时 3 分钟 | 审阅拖过超时，任务被重领 |
+| 手上有未回传任务时拒绝再次 `fetch` | 悬空面越滚越大 |
+| `submit` 重新核对检出 `HEAD` == fetch 时记录的 commit | 看的是 A 提交、回传的是 B 提交 |
+| 已回传任务拒绝二次回传 | 回传不可逆，不能改分 |
+| 已超平台超时的任务拒绝回传 | 任务可能已被他人重领，回传会覆盖或被拒 |
+| `pass`/`fail` 必须带 `--reason` | 二值结论无理由则无法申诉与复核 |
+| 未采证的任务不能按 `pass`/`fail` 回传 | 只能用 `--verdict error` |
+| 回传的 `commitId` 必须是完整 40/64 位 | 平台拒绝短 SHA |
+| `fetch` 任一步异常都**不删现场** | 旧 `manual` 路径的现场被毁问题 |
+
+**审阅时限**：平台默认 30 分钟未回传即可被重领（最多再领 3 次）。人工审阅要在这个窗口内完成；
+不够时用 `--timeout-minutes` 调大（须长于「审阅 + 回传」总耗时）。`fetch` 会把截止时间打出来。
 
 ## 🔥 探测必须用 probe.py，不要直接打领取接口
 
