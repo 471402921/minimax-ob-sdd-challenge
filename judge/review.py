@@ -143,7 +143,18 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     # 防呆：已有悬着的任务就不再领新的。领取是有副作用的，
     # 在手上还有未回传任务时再领，只会放大悬空面。
-    live = _list_pending(workdir)
+    #
+    # 只统计**还没过平台硬超时**的。已超时的任务平台已放回队列，submit 对它必然被拒，
+    # 本地又没有清除它的命令——若仍算「悬着」，一次超时就会永久拦住所有后续 fetch。
+    # 它们的 pending 文件保留以备查，`list` 里仍显示为 🔴。
+    now = time.time()
+    all_pending = _list_pending(workdir)
+    live = [p for p in all_pending if p.get("platform_deadline_epoch", 0) > now]
+    stale = [p for p in all_pending if p.get("platform_deadline_epoch", 0) <= now]
+    if stale:
+        print(f"提示：忽略 {len(stale)} 个已超过平台超时的 pending "
+              f"（taskId={', '.join(str(p['task_id']) for p in stale)}）——"
+              "平台已将它们放回队列；本地记录保留以备查。")
     if live and not args.allow_multiple:
         print("拒绝领取：手上仍有未回传的任务，请先处理（或加 --allow-multiple 明确放行）：", file=sys.stderr)
         for p in live:

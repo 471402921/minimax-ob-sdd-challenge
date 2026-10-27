@@ -24,28 +24,36 @@ python3 judge/run_judge.py --local-repo /path/to/some/repo
 python3 judge/run_judge.py --once --mode stub-pass
 ```
 
-## 🧑‍⚖️ 正式判题：人工审阅两阶段（`review.py`）
+## 🧑‍⚖️ 正式判题：人工审阅入口（推荐 `review.sh`）
 
 > ⚠️ **正式判题不要用 `run_judge.py --mode stub-*`**——stub 会不看代码就回传结果，
-> 而回传不可逆。也**不要用 `--mode manual`**：它要求先给出人工结论，
-> 但结论必须看到代码后才能下、代码又要领取后才有，是个死结；
-> 更糟的是 `judge()` 抛出的 `NotImplementedError` 未被捕获，领取后会崩溃、
-> **回传 0 次、`finally` 还会删掉检出目录**，留下一个悬空任务。
+> 而回传不可逆。也**不要用 `--mode manual`**：旧 manual 模式已被安全拦截。
 
-正式判题用 `review.py`，把「领取留证」与「回传」拆成两步，中间留给人：
+正式判题推荐使用带交互护栏的脚本 `judge/review.sh`（底座引擎为 `review.py`），把「领取留证」与「回传」拆成两步，中间留给人审阅：
 
 ```bash
-# 阶段 1：领取 → 拉取 → 采证 → 保留检出 → 写 pending → 不回传
-python3 judge/review.py fetch
+# 0. 预检环境与连通性（使用无交集题目探测，100% 不会领取任务）
+./judge/review.sh check
+
+# 阶段 1：领取 1 条 → 拉取 → 采证 → 保留检出 → 写 pending → 不回传
+./judge/review.sh fetch                # 默认 60 分钟时限，终端敲 yes 确认
+./judge/review.sh fetch --minutes 90   # 审阅复杂作品时可调大超时
 
 # （人工审阅 workdir/task-<id>/ 与 workdir/task-<id>.evidence.json）
 
-# 阶段 2：核对版本与时限后回传（回传不可逆，--verdict 没有默认值）
-python3 judge/review.py submit --task-id <id> --verdict pass --reason "…"
-python3 judge/review.py submit --task-id <id> --verdict fail --reason "…"
-python3 judge/review.py submit --task-id <id> --verdict error --fail-msg 4   # 无法评测
+# 阶段 2：核对版本与时限后回传（回传不可逆，终端要求敲入 taskId 确认防误触）
+./judge/review.sh submit <taskId> pass --reason "OceanBase 向量检索实现完整，测试通过"
+./judge/review.sh submit <taskId> fail --reason "缺少 seekdb/OceanBase 集成，minimax/ 目录未修改"
+./judge/review.sh submit <taskId> error --fail-msg 4   # 无法拉取选手私有仓库等异常
 
-# 随时查看还悬着哪些任务、剩多少时间
+# 随时查看当前悬着哪些任务、还剩多少时间
+./judge/review.sh list
+```
+
+底层直接调用 Python 也是支持的（参数更自由）：
+```bash
+python3 judge/review.py fetch --timeout-minutes 60
+python3 judge/review.py submit --task-id <id> --verdict pass --reason "…"
 python3 judge/review.py list
 ```
 

@@ -519,7 +519,13 @@ def test_review_two_phase_flow() -> None:
         check("领取响应已先行落盘", (work / "claims" / "claim-9001.json").exists())
 
         # 防呆：手上已有悬着任务时，不再领新的
-        rc2 = review.cmd_fetch(ns(scope_dir="minimax", allow_multiple=False))
+        # ❗ 必须把调用包起来：守卫一旦失效，第二次 fetch 会被放行去 clone，
+        # 擞上已存在的 task-9001 目录抛 FileExistsError —— 整个测试函数中途死掉，
+        # 后面所有断言都不再执行，_failures 里反而是 0。这正是这条断言最该报警的场景。
+        try:
+            rc2 = review.cmd_fetch(ns(scope_dir="minimax", allow_multiple=False))
+        except Exception as exc:  # noqa: BLE001
+            rc2 = f"守卫失效，第二次 fetch 被放行并抛 {type(exc).__name__}"
         check("有悬着任务时拒绝再次领取", rc2 == 3, f"rc={rc2}")
         check("  └ 拒绝发生在 claim 之前（claim 次数不增）", claim_count["n"] == 1,
               f"claim 被调用 {claim_count['n']} 次")
@@ -645,6 +651,33 @@ def test_review_two_phase_flow() -> None:
         check("检出与 HEAD 都就绪但阶段为 fetch_failed 时仍拒绝",
               rc == 5 and len(posts) == n_before, f"rc={rc}")
         check("  └ 且是「阶段」守卫在拦", "没有完成采证" in err, err.strip()[:60])
+
+        # ── 已超平台硬超时的 pending 不应永久拦住新的 fetch ──
+        # 起因：任务超时后平台已放回队列，submit 对它必然被拒，本地又没有清除它的命令。
+        # 若仍算「悬着」，一次审阅超时就会永久拦住所有后续 fetch。
+        # 先用「未超时」做对照，证明这里确实会拦，再改成已超时断言不再拦——
+        # 否则断言可能因为别的原因恰好通过。
+        review.clone_and_checkout = fake_clone
+        raw_claim["taskId"] = 9004
+        claims_before = claim_count["n"]
+        rc, err = call(review.cmd_fetch, ns(scope_dir="minimax", allow_multiple=False))
+        check("对照：未超时的 pending（9003）仍然拦住新的 fetch", rc == 3, f"rc={rc}")
+        check("  └ 且拦在 claim 之前", claim_count["n"] == claims_before)
+
+        p9003 = work / "task-9003.pending.json"
+        stale = json.loads(p9003.read_text())
+        stale["platform_deadline_epoch"] = _time.time() - 600
+        stale["deadline_epoch"] = _time.time() - 780
+        p9003.write_text(json.dumps(stale))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = review.cmd_fetch(ns(scope_dir="minimax", allow_multiple=False))
+        check("已超时的 pending 不再拦住新的 fetch", rc == 0, f"rc={rc}")
+        check("  └ 确实领取了新任务（claim 被调用）", claim_count["n"] == claims_before + 1)
+        check("  └ 提示了忽略的过期 pending", "忽略 1 个已超过平台超时" in buf.getvalue()
+              and "9003" in buf.getvalue(), buf.getvalue()[:80])
+        check("  └ 过期 pending 文件保留以备查", p9003.exists())
+        check("  └ 新任务的 pending 已写入", (work / "task-9004.pending.json").exists())
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -697,6 +730,283 @@ def test_deprecated_manual_mode_refuses_before_claim() -> None:
             os.environ["OB_JUDGE_TOKEN"] = old_tok
 
 
+def test_review_sh_guards() -> None:
+    """review.sh 的护栏：沙箱 git 仓库 + 桩引擎，真实运行脚本，不碰平台。
+
+    守卫都要**单独触发**并断言特征文案——多层守卫互相遮挡时，测试只验证「最终被拒」，
+    某一层被改坏后照样是绿的（本项目的 review.py 测试首版就栽在这里）。
+    """
+    print("\n[12] review.sh 护栏（沙箱 + 桩引擎，不碰平台）")
+
+    import pty
+    import select
+    import time as _time
+
+    SENT = "FAKE_SENTINEL_TOKEN_0123456789ABCDEF0123456789ABCDEF"
+    script_src = Path(__file__).parent / "review.sh"
+    check("review.sh 存在且可执行", script_src.is_file() and os.access(script_src, os.X_OK))
+
+    stub = (
+        "import json, os, pathlib, sys\n"
+        "log = pathlib.Path(os.environ['STUB_LOG'])\n"
+        "rec = {'tool': pathlib.Path(__file__).name, 'argv': sys.argv[1:],\n"
+        "       'token_in_env': bool(os.environ.get('OB_JUDGE_TOKEN'))}\n"
+        "with log.open('a') as f: f.write(json.dumps(rec, ensure_ascii=False) + '\\n')\n"
+        "a = sys.argv[1:]\n"
+        "if 'list' in a: print('悬着（未回传）: 0    已回传: 0')\n"
+        "if 'fetch' in a and os.environ.get('STUB_CLAIM') == '1':\n"
+        "    wd = pathlib.Path(a[a.index('--workdir') + 1]); wd.mkdir(parents=True, exist_ok=True)\n"
+        "    (wd / 'task-777.pending.json').write_text(json.dumps({'task_id': 777}))\n"
+        "if 'list' in a: sys.exit(int(os.environ.get('STUB_LIST_RC', '0')))\n"
+        "sys.exit(int(os.environ.get('STUB_RC', '0')) if ('fetch' in a or 'submit' in a) else 0)\n"
+    )
+
+    def sandbox(root: Path, *, ignore: str = "workdir/\nruns/\n") -> Path:
+        (root / "judge").mkdir(parents=True)
+        shutil.copy(script_src, root / "judge" / "review.sh")
+        for name in ("review.py", "probe.py"):
+            (root / "judge" / name).write_text(stub)
+        (root / ".gitignore").write_text(ignore)
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True,
+                       env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull})
+        return root / "judge" / "review.sh"
+
+    def base_env(log: Path, **extra: str) -> dict[str, str]:
+        e = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "HOME": str(log.parent),
+             "GIT_CONFIG_GLOBAL": os.devnull, "STUB_LOG": str(log)}
+        e.update(extra)
+        return e
+
+    def calls(log: Path) -> list[dict]:
+        return [json.loads(x) for x in log.read_text().splitlines()] if log.exists() else []
+
+    transcript: list[str] = []  # 所有场景的全部输出，最后统一扫 token
+
+    def run(script: Path, args: list[str], env: dict[str, str], *, tty_answers=None):
+        """tty_answers=None 走非交互（stdin=/dev/null）；给列表则用 pty 模拟终端输入。"""
+        if tty_answers is None:
+            r = subprocess.run(["bash", str(script), *args], env=env, cwd=script.parent.parent,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+            out = r.stdout + r.stderr
+            transcript.append(out)
+            return r.returncode, out
+        master, slave = pty.openpty()
+        proc = subprocess.Popen(["bash", str(script), *args], env=env, cwd=script.parent.parent,
+                                stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+        os.close(slave)
+        for a in tty_answers:
+            os.write(master, (a + "\n").encode())
+        buf = b""
+        end = _time.time() + 30
+        while _time.time() < end:
+            ready, _, _ = select.select([master], [], [], 0.2)
+            if ready:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+            elif proc.poll() is not None:
+                break
+        proc.wait(timeout=10)
+        os.close(master)
+        out = buf.decode("utf-8", "replace")
+        transcript.append(out)
+        return proc.returncode, out
+
+    tmp = Path(tempfile.mkdtemp(prefix="ob-judge-sh-"))
+    try:
+        root = tmp / "a"
+        sh = sandbox(root)
+        log = tmp / "calls.log"
+        env_ok = base_env(log, OB_JUDGE_TOKEN=SENT)
+        env_none = base_env(log)
+
+        # ── token 守卫 ──
+        rc, out = run(sh, ["check"], env_none)
+        check("未设置 token → check 退出 2", rc == 2, f"rc={rc}")
+        check("  └ 指明是 OB_JUDGE_TOKEN 未设置", "OB_JUDGE_TOKEN 未设置" in out, out[:80])
+        check("  └ 在碰平台前就退出（桩引擎 0 次调用）", calls(log) == [], str(calls(log)))
+
+        for bad_tok, label, needle in (
+            ("FAKE_SENTINEL_TOKEN with a space 0123456789ABCDEF", "含空格", "空白字符"),
+            ("'" + SENT + "'", "首尾带单引号", "引号"),
+            ('"' + SENT + '"', "首尾带双引号", "引号"),
+        ):
+            rc, out = run(sh, ["check"], base_env(log, OB_JUDGE_TOKEN=bad_tok))
+            check(f"token {label} → 退出 2 并点明原因", rc == 2 and needle in out, f"rc={rc} {out[:60]}")
+        check("  └ 坏 token 全程没有调用桩引擎", calls(log) == [])
+
+        # ── check：通过路径 ──
+        rc, out = run(sh, ["check"], env_ok)
+        check("check 通过 → 退出 0", rc == 0, f"rc={rc} {out[-120:]}")
+        tools = [c["tool"] for c in calls(log)]
+        check("  └ 调用了 probe 与 list（顺序：probe → list）", tools == ["probe.py", "review.py"], str(tools))
+        check("  └ 引擎通过环境变量拿到 token（而非 argv）",
+              all(c["token_in_env"] for c in calls(log)))
+        log.unlink()
+
+        # ── fetch：参数校验（每条都不得触达引擎）──
+        for bad_args, label in (
+            (["fetch", "--yes", "--minutes", "0"], "--minutes 0"),
+            (["fetch", "--yes", "--minutes", "241"], "--minutes 超上限"),
+            (["fetch", "--yes", "--minutes", "abc"], "--minutes 非数字"),
+            (["fetch", "--yes", "--minutes", "-5"], "--minutes 负数"),
+            (["fetch", "--yes", "--minutes"], "--minutes 缺值"),
+            (["fetch", "--yes", "--bogus"], "未知参数"),
+        ):
+            rc, out = run(sh, bad_args, env_ok)
+            check(f"fetch {label} 被拒", rc == 2 and calls(log) == [], f"rc={rc} {out[:60]}")
+
+        # ── fetch：非交互未加 --yes ──
+        rc, out = run(sh, ["fetch"], env_ok)
+        check("非交互 + 未加 --yes → 拒绝领取", rc == 2, f"rc={rc}")
+        check("  └ 且点明是「不是交互终端」而非别的守卫", "不是交互终端" in out, out[-100:])
+        check("  └ 引擎的 fetch 一次都没被调用",
+              not any("fetch" in c["argv"] for c in calls(log)), str(calls(log)))
+        log.unlink(missing_ok=True)
+
+        # ── fetch：--yes 的调用形态（固定 questionId、不含 token、分钟数正确）──
+        rc, out = run(sh, ["fetch", "--yes", "--minutes", "08"], env_ok | {"STUB_CLAIM": "1",
+                                                                          "OB_QUESTION_ID": "600069"})
+        fcalls = [c for c in calls(log) if "fetch" in c["argv"]]
+        check("fetch --yes 成功 → 退出 0", rc == 0, f"rc={rc} {out[-100:]}")
+        check("  └ 引擎被调用恰好 1 次 fetch", len(fcalls) == 1, str(fcalls))
+        argv = fcalls[0]["argv"] if fcalls else []
+        check("  └ questionId 固定为 600077（环境变量 OB_QUESTION_ID=600069 不能覆盖）",
+              "--question-id" in argv and argv[argv.index("--question-id") + 1] == "600077", str(argv))
+        check("  └ 08 被当十进制 8 分钟而非八进制报错",
+              "--timeout-minutes" in argv and argv[argv.index("--timeout-minutes") + 1] == "8", str(argv))
+        check("  └ token 不在 argv 里", SENT not in json.dumps(argv))
+        check("  └ 领到任务后提示下一步", "下一步" in out, out[-120:])
+        (root / "workdir" / "task-777.pending.json").unlink()
+        log.unlink()
+
+        # ── fetch：没领到任务时的提示（token 不属于本题时 data:null 与「暂无任务」无法区分）──
+        rc, out = run(sh, ["fetch", "--yes"], env_ok)  # STUB_CLAIM 未设 → 不产生 pending
+        check("没领到任务 → 退出 0 并提示可能是 token 问题",
+              rc == 0 and "没有领到任务" in out and "token" in out, f"rc={rc} {out[-140:]}")
+        log.unlink()
+
+        # ── fetch：引擎失败时透传退出码并提示任务可能仍悬着 ──
+        rc, out = run(sh, ["fetch", "--yes"], env_ok | {"STUB_RC": "4"})
+        check("引擎 fetch 失败 → 透传退出码 4", rc == 4, f"rc={rc}")
+        check("  └ 提示任务可能仍悬着", "仍然悬着" in out, out[-120:])
+        log.unlink()
+
+        # ── fetch：list 只是信息展示，它失败不应让整个流程无声退出 ──
+        rc, out = run(sh, ["fetch", "--yes"], env_ok | {"STUB_LIST_RC": "9", "STUB_CLAIM": "1"})
+        check("list 展示失败 → 给出提示而不是无声退出", "无法列出悬着的任务" in out, out[-160:])
+        check("  └ 流程仍继续并调用了引擎 fetch", any("fetch" in c["argv"] for c in calls(log)))
+        (root / "workdir" / "task-777.pending.json").unlink(missing_ok=True)
+        log.unlink(missing_ok=True)
+
+        # ── fetch：交互确认（pty）──
+        rc, out = run(sh, ["fetch"], env_ok, tty_answers=["no"])
+        check("pty：回答 no → 取消，退出 1", rc == 1, f"rc={rc}")
+        check("  └ 取消时引擎 fetch 未被调用", not any("fetch" in c["argv"] for c in calls(log)))
+        rc, out = run(sh, ["fetch"], env_ok, tty_answers=["y"])
+        check("pty：只回答 y 不算确认（必须敲 yes）", rc == 1 and
+              not any("fetch" in c["argv"] for c in calls(log)), f"rc={rc}")
+        rc, out = run(sh, ["fetch"], env_ok, tty_answers=["yes"])
+        check("pty：回答 yes → 领取", rc == 0 and any("fetch" in c["argv"] for c in calls(log)),
+              f"rc={rc} {out[-80:]}")
+        log.unlink(missing_ok=True)
+
+        # ── 守卫：workdir/runs 未被 gitignore → 拒绝在领取前 ──
+        root2 = tmp / "b"
+        sh2 = sandbox(root2, ignore="# 空\n")
+        log2 = tmp / "calls2.log"
+        rc, out = run(sh2, ["fetch", "--yes"], base_env(log2, OB_JUDGE_TOKEN=SENT))
+        check("workdir/runs 未被忽略 → fetch 被拒", rc == 2, f"rc={rc}")
+        check("  └ 点明是 .gitignore 问题（选手代码会推上公网）", "没有被 .gitignore 忽略" in out, out[:100])
+        check("  └ 引擎一次都没被调用", calls(log2) == [])
+        root3 = tmp / "c"
+        sh3 = sandbox(root3, ignore="workdir/\n")  # 只忽略一个，另一个漏了
+        rc, out = run(sh3, ["fetch", "--yes"], base_env(tmp / "calls3.log", OB_JUDGE_TOKEN=SENT))
+        check("只漏忽略 runs/ 也要拒绝，并指名 runs/", rc == 2 and "runs/" in out and "workdir/" not in
+              out.split("没有被 .gitignore 忽略")[1].split("\n")[0], f"rc={rc} {out[:120]}")
+
+        # ── submit：参数校验（都不得触达引擎）──
+        log.unlink(missing_ok=True)
+        for bad_args, label, needle in (
+            (["submit", "abc", "pass", "--reason", "x", "--yes"], "taskId 非数字", "taskId 必须是数字"),
+            (["submit", "123", "maybe", "--reason", "x", "--yes"], "非法结论", "pass / fail / error"),
+            (["submit", "123", "pass", "--yes"], "pass 缺 --reason", "必须带 --reason"),
+            (["submit", "123", "fail", "--reason", "   ", "--yes"], "fail 纯空白 --reason", "必须带 --reason"),
+            (["submit", "123", "pass", "--reason", "x", "--fail-msg", "4", "--yes"], "--fail-msg 配 pass", "只能配合 error"),
+            (["submit", "123", "error", "--fail-msg", "x", "--yes"], "--fail-msg 非数字", "必须是数字"),
+            (["submit", "123"], "缺结论", "用法"),
+        ):
+            rc, out = run(sh, bad_args, env_ok)
+            check(f"submit {label} 被拒并点明原因", rc == 2 and needle in out and calls(log) == [],
+                  f"rc={rc} {out[:70]}")
+
+        rc, out = run(sh, ["submit", "123", "pass", "--reason", "x", "--yes"], env_none)
+        check("submit 无 token → 在确认之前就退出", rc == 2 and "OB_JUDGE_TOKEN 未设置" in out and calls(log) == [])
+
+        # ── submit：非交互未加 --yes ──
+        rc, out = run(sh, ["submit", "123", "fail", "--reason", "无实质实现"], env_ok)
+        check("submit 非交互 + 未加 --yes → 拒绝", rc == 2 and "不是交互终端" in out, f"rc={rc}")
+        check("  └ 引擎 submit 未被调用", calls(log) == [])
+
+        # ── submit：摘要内容 + 调用形态 ──
+        (root / "workdir").mkdir(exist_ok=True)
+        (root / "workdir" / "task-123.pending.json").write_text(json.dumps({
+            "task_id": 123, "player": "team-9", "branch": "main", "stage": "awaiting_review",
+            "commit_id": "c" * 40, "max_score": 20,
+            "platform_deadline_epoch": _time.time() + 900}))
+        rc, out = run(sh, ["submit", "123", "fail", "--reason", "无实质实现", "--yes"], env_ok)
+        sc = [c for c in calls(log) if "submit" in c["argv"]]
+        check("submit --yes → 调用引擎一次", rc == 0 and len(sc) == 1, f"rc={rc} {out[-80:]}")
+        a = sc[0]["argv"] if sc else []
+        check("  └ 参数完整且 questionId 固定", all(x in a for x in
+              ("--task-id", "123", "--verdict", "fail", "--reason", "无实质实现", "--question-id", "600077")), str(a))
+        check("  └ 全局参数在子命令之前（argparse 要求）", a.index("--question-id") < a.index("submit"), str(a))
+        check("  └ 摘要显示选手/完整 commit/满分", "team-9" in out and "c" * 40 in out and "满分" in out, out[:200])
+        check("  └ 提醒理由会对外可见", "对外" in out)
+        log.unlink()
+
+        # ── submit：pty 确认——必须敲 taskId，不是 yes ──
+        rc, out = run(sh, ["submit", "123", "pass", "--reason", "ok"], env_ok, tty_answers=["yes"])
+        check("pty：回答 yes 不算确认（要敲 taskId）", rc == 1 and calls(log) == [], f"rc={rc}")
+        rc, out = run(sh, ["submit", "123", "pass", "--reason", "ok"], env_ok, tty_answers=["999"])
+        check("pty：敲错 taskId → 取消", rc == 1 and calls(log) == [], f"rc={rc}")
+        rc, out = run(sh, ["submit", "123", "pass", "--reason", "ok"], env_ok, tty_answers=["123"])
+        check("pty：敲对 taskId → 回传", rc == 0 and any("submit" in c["argv"] for c in calls(log)),
+              f"rc={rc} {out[-80:]}")
+        log.unlink(missing_ok=True)
+
+        # ── error 结论 ──
+        rc, out = run(sh, ["submit", "123", "error", "--fail-msg", "4", "--yes"], env_ok)
+        sc = [c for c in calls(log) if "submit" in c["argv"]]
+        check("submit error 不要求 --reason，且透传 --fail-msg",
+              rc == 0 and sc and "--fail-msg" in sc[0]["argv"] and "4" in sc[0]["argv"], f"rc={rc}")
+        log.unlink(missing_ok=True)
+
+        # ── list 不需要 token ──
+        rc, out = run(sh, ["list"], env_none)
+        check("list 无需 token", rc == 0 and any("list" in c["argv"] for c in calls(log)), f"rc={rc}")
+
+        # ── xtrace：bash -x 不得把展开后的 token 打出来 ──
+        r = subprocess.run(["bash", "-x", str(sh), "check"], env=env_ok, cwd=root, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=60)
+        transcript.append(r.stdout + r.stderr)
+        check("bash -x 运行 check 时 token 不出现在 xtrace 里", SENT not in (r.stdout + r.stderr))
+        r = subprocess.run(["bash", str(sh), "check"], env={**env_ok, "SHELLOPTS": "xtrace"}, cwd=root,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        transcript.append(r.stdout + r.stderr)
+        check("SHELLOPTS=xtrace 时 token 同样不出现", SENT not in (r.stdout + r.stderr))
+
+        # ── 总扫描：token 不得出现在任何输出与桩日志里 ──
+        everything = "\n".join(transcript) + (log.read_text() if log.exists() else "")
+        check("全部场景的输出与引擎调用日志里都没有 token", SENT not in everything)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     print("=" * 62)
     print("OB 判题对接 —— 安全与协议回归测试")
@@ -712,6 +1022,7 @@ def main() -> int:
     test_scope_dir_isolation()
     test_review_two_phase_flow()
     test_deprecated_manual_mode_refuses_before_claim()
+    test_review_sh_guards()
 
     print("\n" + "=" * 62)
     if _skips:
