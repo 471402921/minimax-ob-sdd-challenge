@@ -1,5 +1,7 @@
 """No model/Docker. Cooperative phase budget and honest fallback checks."""
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -47,6 +49,12 @@ class GuardTests(unittest.TestCase):
             p=Path(tmp)/'budget'
             self.assertEqual(guard.budget('install',[sys.executable,'-c','import time;time.sleep(5)'],p),124)
             self.assertGreaterEqual(json.loads(p.read_text())['install'],0.05)
+
+    def test_monitor_duration_is_required(self):
+        # A default duration let a foreground `monitor | head` block a trial.
+        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(io.StringIO()):
+            guard.main(['monitor'])
+        self.assertEqual(ctx.exception.code, 2)
 
     def test_missing_metrics_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:

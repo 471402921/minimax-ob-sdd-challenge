@@ -48,8 +48,16 @@ def sample(cgroup: Path):
 def monitor(output: Path, duration: int):
     end = time.monotonic() + duration
     while time.monotonic() < end:
+        record = sample(Path('/sys/fs/cgroup'))
         with (output / 'evidence/runtime-resources.jsonl').open('a') as f:
-            f.write(json.dumps(sample(Path('/sys/fs/cgroup'))) + '\n')
+            f.write(json.dumps(record) + '\n')
+        # Emit one line per sample: a caller that pipes us into `head` must see
+        # output (and get SIGPIPE) instead of blocking for the whole duration.
+        try:
+            print(json.dumps({'sample': record['time'],
+                              'memory_current': record.get('memory.current')}), flush=True)
+        except BrokenPipeError:
+            return
         time.sleep(5)
 
 
@@ -83,7 +91,7 @@ def budget(phase: str, command: list[str], state: Path):
         return code
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:  # noqa: D401 - CLI entry
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='mode', required=True)
     start = sub.add_parser('start')
@@ -92,8 +100,11 @@ def main():
     b.add_argument('phase', choices=list(LIMITS))
     b.add_argument('command', nargs=argparse.REMAINDER)
     mon = sub.add_parser('monitor')
-    mon.add_argument('--duration', type=int, default=1800)
-    args = p.parse_args()
+    # No default on purpose: a foreground `monitor` with an implicit 30-minute
+    # duration once blocked a whole trial behind `| head`. Sampling is started
+    # automatically by `start`; manual runs must state their duration.
+    mon.add_argument('--duration', type=int, required=True)
+    args = p.parse_args(argv)
     output = Path('/output')
     if args.mode == 'start':
         checkpoint(Path('/input/manifest.json'), output)
