@@ -31,6 +31,12 @@ Run from the repository root, when execution is authorized. Prefer the smallest 
 
 Harbor task lint, container execution and model-backed validation are separate gates documented in [harbor/README.md](harbor/README.md). Lint a **generated task**, not the unexpanded template. `uvx` may download dependencies; a model run spends subscription quota. Do not trigger either as an unnoticed side effect of a documentation edit.
 
+## Verdict automation
+
+- `harbor/triage.py` is deterministic: it only reads a finished report, its evidence hashes and the staged manifest. It never calls a model, never reads a repository and never invents verdicts.
+- The gate may classify a clean report as `auto_pass_candidate`. It must never auto-score a `failed` or `uncertain` trial; those always need a person, because an observed failure can also be an evaluator artefact.
+- `--submit-auto-pass` is irreversible and additionally requires `--yes` plus a positive `--max`; keep the platform token in the control layer only, never inside a trial. A one-batch backtest (n=4) matched human verdicts exactly — that is a smoke test, not a calibration study.
+
 ## Platform operations are not tests
 
 - `queryOneTaskRecord`, `review.sh fetch`, and skill `claim` acquire real tasks and start a lease. `synchronizeTaskRecord`, `review.sh submit`, skill `callback` and `retry` affect real results. Require explicit user authorization; never use them to probe connectivity or queue size.
