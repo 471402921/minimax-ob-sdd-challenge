@@ -27,6 +27,14 @@ report-validator reward with a competition score.
    substantive evidence, never treat it as completed review. Target a 10-minute
    warm-path review: first minute inventory, install budget 240s, tests 120s,
    backend diagnosis 120s, and reserve the LAST TWO MINUTES for report/hashes.
+   Install ONCE with `python3 /opt/reviewer-skill/prepare_venv.py --requirements
+   <submission requirements>` (default venv `/work/review/venv`, idempotent): a repeat
+   call prints `reuse`. Run tests and samples with that interpreter and `PYTHONPATH`
+   pointing at each scratch tree; do NOT re-run `pip install` per copy (measured: 6-8
+   installs x ~20 s). If `/input/runtime-profile.json` says `offline_install`, pip is
+   pinned to the image wheel set (`PIP_NO_INDEX=1`): a network attempt fails in about a
+   second, so install the declared requirements offline and record the adjustment
+   instead of retrying against the index.
    All installation/bootstrap/download commands MUST use:
    `python3 /opt/reviewer-skill/runtime_guard.py budget install -- COMMAND ...`
    Tests and backend diagnosis likewise use `budget tests` / `budget backend`.

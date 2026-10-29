@@ -112,6 +112,21 @@ class StagingTests(unittest.TestCase):
             self.assertTrue(json.loads((dest / "environment/input/manifest.json").read_text())["synthetic"])
             self.assertIn("Synthetic", (dest / "environment/submission/minimax/README.md").read_text())
 
+    def test_offline_install_pins_pip_without_dropping_evidence(self):
+        image = "sha256:" + "b" * 64
+        with patch.object(prepare, "PRIVATE_ROOT", self.root / "private"):
+            task = prepare.prepare(21, self.repo, self.commit, base_image=image, offline_install=True)
+            dockerfile = (task / "environment/Dockerfile").read_text()
+            self.assertIn("PIP_NO_INDEX=1", dockerfile)
+            profile = json.loads((task / "environment/input/runtime-profile.json").read_text())
+            self.assertTrue(profile["offline_install"])
+            manifest = json.loads((task / "environment/input/manifest.json").read_text())
+            self.assertTrue(manifest["offline_install"])
+            online = prepare.prepare(22, self.repo, self.commit, base_image=image)
+            self.assertNotIn("PIP_NO_INDEX", (online / "environment/Dockerfile").read_text())
+            with self.assertRaises(ValueError):
+                prepare.prepare(23, self.repo, self.commit, offline_install=True)
+
     def test_memory_profile_and_base_image_are_explicit(self):
         image = "sha256:" + "a" * 64
         with patch.object(prepare, "PRIVATE_ROOT", self.root / "private"):

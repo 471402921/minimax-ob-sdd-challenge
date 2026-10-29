@@ -26,6 +26,12 @@ submission starts and owns its PowerContext service, use that instead of any
 evaluator-provided endpoint; an evaluator service on port 18000 is only a
 fallback for submissions that require an externally provisioned service, and
 its access mode may differ from the submitted client's assumption.
+Install the declared dependencies ONCE via
+`python3 /opt/reviewer-skill/prepare_venv.py --requirements <path>` and reuse
+`/work/review/venv` for every scratch tree (repeat calls are no-ops). Do not
+re-run pip per copy. When the runtime profile sets `offline_install`, pip is
+`PIP_NO_INDEX=1`: install from the image wheel set and record the adjustment; a
+network attempt fails almost immediately, so do not keep retrying it.
 All installs/bootstrap/downloads and test batches go through
 `python3 /opt/reviewer-skill/runtime_guard.py budget <install|tests|backend> -- CMD`
 so retries share one cumulative per-phase budget (install 240 s, tests and

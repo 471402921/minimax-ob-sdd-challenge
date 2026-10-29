@@ -67,12 +67,14 @@ def snapshot(repo: Path, commit: str) -> dict[str, tuple[bytes, int]]:
 
 def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *, synthetic: bool = False,
             base_image: str | None = None, services: bool = False,
-            memory_mb: int | None = None) -> Path:
+            memory_mb: int | None = None, offline_install: bool = False) -> Path:
     # An immutable local image ID, not an arbitrary registry/tag or Dockerfile fragment.
     if base_image is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", base_image):
         raise ValueError("prewarmed base image must be an immutable local sha256 image ID")
     if services and not base_image:
         raise ValueError("services require an explicitly prewarmed image")
+    if offline_install and not base_image:
+        raise ValueError("offline install requires the prewarmed wheel image")
     # 2 GiB is the measured floor for a real submission (install + service +
     # sample). 1 GiB completed but hit the cgroup limit thousands of times.
     memory_mb = memory_mb if memory_mb is not None else 2048
@@ -103,11 +105,18 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
             # BuildKit treats FROM sha256:<id> as a registry repository. Use a
             # content-named local tag; the batch preflight verifies its exact ID.
             local_tag = 'harbor/prewarm:sha-' + base_image.split(':', 1)[1]
+            # Measured waste: a submission whose pins are all cached still spent
+            # the full 240 s budget on network pip. With --offline-install pip
+            # resolves only from the image wheel set and fails in about a second,
+            # so the reviewer adapts instead of waiting.
+            offline_env = ('ENV PIP_NO_INDEX=1 PIP_TIMEOUT=5 PIP_RETRIES=0\n'
+                           if offline_install else '')
             (temp / 'environment/Dockerfile').write_text(
-                f'FROM {local_tag}\nUSER root\n' + snapshot_part)
+                f'FROM {local_tag}\nUSER root\n' + offline_env + snapshot_part)
             (temp / 'environment/input').mkdir(exist_ok=True)
             (temp / 'environment/input/runtime-profile.json').write_text(json.dumps({
                 'base_image': base_image, 'services': services,
+                'offline_install': offline_install,
                 'dependency_policy': 'explicit compatibility experiment, not original pin success'}))
         for rel, (data, mode) in files.items():
             target = temp / "environment/submission" / rel
@@ -117,6 +126,7 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
         identity = {"task_id": task_id, "commit_id": commit, "scope": "minimax"}
         manifest = {**identity, "synthetic": synthetic, "auto_callback": False,
                     "runtime_profile": "backend" if services else "light", "base_image": base_image,
+                    "offline_install": offline_install,
                     "files": {p: {"sha256": hashlib.sha256(data).hexdigest(), "mode": oct(mode)}
                               for p, (data, mode) in files.items()}}
         (temp / "environment/input").mkdir(exist_ok=True)
@@ -146,12 +156,15 @@ def main() -> int:
                         "documents an EXTERNAL service it does not start itself")
     p.add_argument("--memory-mb", type=int, default=None,
                    help="agent environment memory (2048..8192); default 2048, use 4096+ for heavy tasks")
+    p.add_argument("--offline-install", action="store_true",
+                   help="set PIP_NO_INDEX for a submission whose pins are all cached (fast failure)")
     args = p.parse_args()
     if args.synthetic and (args.repo or args.commit):
         p.error("synthetic cannot be combined with repo/commit")
     try:
         print(prepare(args.task_id, args.repo, args.commit, synthetic=args.synthetic,
-                      base_image=args.base_image, services=args.services, memory_mb=args.memory_mb))
+                      base_image=args.base_image, services=args.services, memory_mb=args.memory_mb,
+                      offline_install=args.offline_install))
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         p.exit(2, f"Staging refused: {type(exc).__name__}. Check fixed commit, scope, size and credential policy.\n")
     return 0
