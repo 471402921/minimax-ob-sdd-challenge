@@ -15,6 +15,8 @@ class PreinstalledPi(Pi):
         result = await self.exec_as_agent(environment, command=(
             "set -euo pipefail; test \"$(pi --version)\" = 1.4.0; "
             "node --version; mkdir -p \"$HOME/.nvm\"; "
+            "if [ -f /opt/reviewer-skill/runtime_guard.py ]; then "
+            "python3 /opt/reviewer-skill/runtime_guard.py start; fi; "
             "printf '%s\\n' '# Preinstalled Node is on PATH; no nvm download.' > \"$HOME/.nvm/nvm.sh\"; "
             "python3 -c \"import json,pathlib,subprocess; "
             "p=pathlib.Path('/input/runtime-profile.json'); "

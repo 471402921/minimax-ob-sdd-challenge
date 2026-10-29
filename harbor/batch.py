@@ -23,6 +23,7 @@ from typing import Any
 
 from run_pilot import ROOT, environment, command
 from resources import AdmissionPolicy, capture
+import dependency_audit
 
 MAX_TRIALS = 4
 MAX_BACKENDS = 2
@@ -178,16 +179,32 @@ def run(args, tasks: list[Task]) -> int:
     policy = AdmissionPolicy()
     snapshot = capture(ROOT)
     reasons = policy.evaluate(snapshot)
+    # A cold dependency closure previously cost 12+ minutes, so make it an
+    # explicit decision instead of letting the reviewer discover it live.
+    audits = {}
+    if not args.oracle:
+        for task in tasks:
+            try:
+                audits[str(task.task_id)] = dependency_audit.audit(
+                    task.path, [args.wheels]) if args.wheels else {
+                    'all_pins_cached': None, 'summary': {'note': 'no wheel directory supplied'}}
+            except (dependency_audit.AuditError, OSError):
+                audits[str(task.task_id)] = {'all_pins_cached': False,
+                                             'summary': {'error': 'audit refused'}}
     plan = {'batch_id': args.batch_id, 'trials': args.trials, 'backend_slots': args.backends,
             'resource_snapshot': asdict(snapshot), 'admission_blocks': reasons,
-            'auto_claim': False, 'auto_callback': False,
+            'auto_claim': False, 'auto_callback': False, 'dependency_audit': audits,
             'tasks': [{'task_id': t.task_id, 'commit': t.commit, 'profile': t.profile,
                        'digest': t.digest} for t in tasks]}
+    uncached = [tid for tid, audit in audits.items() if audit.get('all_pins_cached') is not True]
     if not args.execute:
         print(json.dumps(plan, ensure_ascii=False, indent=2))
         return 0 if not reasons else 2
     if reasons:
         raise ValueError('resource admission blocked: ' + '; '.join(reasons))
+    if uncached and not args.allow_uncached:
+        raise ValueError('dependency pins are not fully cached; prepare the wheel set or pass '
+                         '--allow-uncached deliberately (cold install can exceed 10 minutes)')
     harbor = args.harbor.resolve()
     if not harbor.is_file() or not os.access(harbor, os.X_OK):
         raise ValueError('installed Harbor executable missing')
@@ -339,6 +356,10 @@ def main() -> int:
     p.add_argument('--backends', type=int, default=2)
     p.add_argument('--timeout', type=int, default=2400)
     p.add_argument('--wait-seconds', type=int, default=60)
+    p.add_argument('--wheels', type=Path,
+                   help='host wheel directory for the read-only dependency audit')
+    p.add_argument('--allow-uncached', action='store_true',
+                   help='run even when declared pins are not cached (slower, explicit)')
     p.add_argument('--harbor', type=Path, default=ROOT/'workdir/harbor-tools/harbor/bin/harbor')
     args = p.parse_args()
     os.umask(0o077)

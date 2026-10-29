@@ -112,6 +112,24 @@ class StagingTests(unittest.TestCase):
             self.assertTrue(json.loads((dest / "environment/input/manifest.json").read_text())["synthetic"])
             self.assertIn("Synthetic", (dest / "environment/submission/minimax/README.md").read_text())
 
+    def test_memory_profile_and_base_image_are_explicit(self):
+        image = "sha256:" + "a" * 64
+        with patch.object(prepare, "PRIVATE_ROOT", self.root / "private"):
+            light = prepare.prepare(11, self.repo, self.commit)
+            self.assertIn("memory_mb = 2048", (light / "task.toml").read_text())
+            self.assertNotIn("runtime-profile.json", [p.name for p in (light / "environment/input").iterdir()])
+            heavy = prepare.prepare(12, self.repo, self.commit, base_image=image, services=True)
+            self.assertIn("memory_mb = 4096", (heavy / "task.toml").read_text())
+            profile = json.loads((heavy / "environment/input/runtime-profile.json").read_text())
+            self.assertEqual(profile["base_image"], image)
+            self.assertTrue(profile["services"])
+            # 1 GiB completed but repeatedly hit the cgroup limit; refuse it as a default.
+            for bad in (1024, 512, 16384):
+                with self.assertRaises(ValueError):
+                    prepare.prepare(13, self.repo, self.commit, memory_mb=bad)
+            with self.assertRaises(ValueError):
+                prepare.prepare(14, self.repo, self.commit, base_image="harbor/prewarm:latest")
+
 
 class ReportTests(unittest.TestCase):
     def setUp(self):

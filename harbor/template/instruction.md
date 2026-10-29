@@ -20,6 +20,17 @@ proof of the original submission. Record unavoidable environment adjustments.
 If required infrastructure is unavailable, mark affected checks `blocked` or
 `not_run`; do not silently substitute fakes and label them live.
 
+Offline dependency wheels are preloaded (`PIP_FIND_LINKS=/opt/wheels/player`).
+Prefer the submission's documented setup scripts exactly as written. When the
+submission starts and owns its PowerContext service, use that instead of any
+evaluator-provided endpoint; an evaluator service on port 18000 is only a
+fallback for submissions that require an externally provisioned service, and
+its access mode may differ from the submitted client's assumption.
+All installs/bootstrap/downloads and test batches go through
+`python3 /opt/reviewer-skill/runtime_guard.py budget <install|tests|backend> -- CMD`
+so retries share one cumulative 120 s budget. On exhaustion mark the affected
+checks blocked and finish the report instead of switching mirrors and retrying.
+
 Output `/output/report.json` and evidence under `/output/evidence/` following
 `/opt/reviewer-skill/report-format.md`. Report all six draft evidence dimensions,
 including uncertainty. This pilot does NOT set the official passing rubric and

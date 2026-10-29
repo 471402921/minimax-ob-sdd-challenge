@@ -66,12 +66,18 @@ def snapshot(repo: Path, commit: str) -> dict[str, tuple[bytes, int]]:
 
 
 def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *, synthetic: bool = False,
-            base_image: str | None = None, services: bool = False) -> Path:
+            base_image: str | None = None, services: bool = False,
+            memory_mb: int | None = None) -> Path:
     # An immutable local image ID, not an arbitrary registry/tag or Dockerfile fragment.
     if base_image is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", base_image):
         raise ValueError("prewarmed base image must be an immutable local sha256 image ID")
     if services and not base_image:
         raise ValueError("services require an explicitly prewarmed image")
+    # 2 GiB is the measured floor for a real submission (install + service +
+    # sample); 1 GiB completed but hit the cgroup limit thousands of times.
+    memory_mb = memory_mb if memory_mb is not None else (4096 if services else 2048)
+    if not 2048 <= memory_mb <= 8192:
+        raise ValueError("memory_mb must be 2048..8192; 1 GiB is measured but not accepted as a default")
     if task_id <= 0:
         raise ValueError("task_id must be positive")
     if synthetic:
@@ -117,7 +123,8 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
         (temp / "environment/input/manifest.json").write_text(json.dumps(manifest, indent=2))
         (temp / "tests/expected.json").write_text(json.dumps(identity, indent=2))
         config = temp / "task.toml"
-        config.write_text(config.read_text().replace("__TASK_NAME__", name))
+        config.write_text(config.read_text().replace("__TASK_NAME__", name)
+                          .replace("memory_mb = 4096", f"memory_mb = {memory_mb}"))
         # Oracle is a transport/report check only; it performs no contestant grading.
         (temp / "solution/expected.json").write_text(json.dumps(identity, indent=2))
         temp.rename(destination)
@@ -134,13 +141,17 @@ def main() -> int:
     p.add_argument("--commit")
     p.add_argument("--synthetic", action="store_true", help="use no private source; no model required for oracle")
     p.add_argument("--base-image", help="immutable local prewarmed sha256 image ID")
-    p.add_argument("--services", action="store_true", help="mark task as requiring prewarmed backend bootstrap")
+    p.add_argument("--services", action="store_true",
+                   help="bootstrap an evaluator-side PowerContext; only when the submission "
+                        "documents an EXTERNAL service it does not start itself")
+    p.add_argument("--memory-mb", type=int, default=None,
+                   help="agent environment memory (2048..8192); default 4096 with --services else 2048")
     args = p.parse_args()
     if args.synthetic and (args.repo or args.commit):
         p.error("synthetic cannot be combined with repo/commit")
     try:
         print(prepare(args.task_id, args.repo, args.commit, synthetic=args.synthetic,
-                      base_image=args.base_image, services=args.services))
+                      base_image=args.base_image, services=args.services, memory_mb=args.memory_mb))
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         p.exit(2, f"Staging refused: {type(exc).__name__}. Check fixed commit, scope, size and credential policy.\n")
     return 0

@@ -22,16 +22,31 @@ report-validator reward with a competition score.
 2. Copy the snapshot into `/work/review`. Keep originals immutable. Record runtime
    versions, dependency versions and environment changes. Never silently repair
    contestant code to obtain a pass. Do not fetch a newer contestant commit.
-   Preserve supplied records before scratch scripts overwrite them. Write an initial
-   schema-valid report after inventory, then checkpoint it; reserve the final five
-   minutes for evidence hashes and final output. Bound each install/download to
-   180 seconds, pip timeout 20 and at most one retry. Prefer provisioned offline
-   wheels; do not repeatedly retry failed downloads until the entire trial expires.
+   Preserve supplied records before scratch scripts overwrite them. The trusted
+   runtime guard creates an initial not_run/review checkpoint; replace it with
+   substantive evidence, never treat it as completed review. Target a 10-minute
+   warm-path review: first minute inventory, total install budget 120s, tests 120s,
+   backend diagnosis 120s, and reserve the LAST TWO MINUTES for report/hashes.
+   All installation/bootstrap/download commands MUST use:
+   `python3 /opt/reviewer-skill/runtime_guard.py budget install -- COMMAND ...`
+   Tests and backend diagnosis likewise use `budget tests` / `budget backend`.
+   The 120s budget is CUMULATIVE across retries, not per-command. On exhaustion
+   mark blocked and move to report; do not bypass the helper or switch mirrors
+   to restart the budget. pip timeout20/retries1, prefer offline wheels.
+   This is a cooperative execution guard, not an OS prohibition on direct pip;
+   report any bypass. A short review with explicit gaps is better than no report.
    If `/input/runtime-profile.json` enables services, the trusted launcher supplies
    a trial-local PowerContext endpoint/scope/token via environment. Use them through
    the submitted client; NEVER print them or read `/tmp/review-services.json`.
-   `/opt/wheels/seekdb` is a compatibility cache, not permission to claim the
-   contestant's original dependency pins installed successfully.
+   Prefer the submission's OWN documented service startup when it has one: an
+   evaluator service is a fallback for submissions that require an external
+   endpoint, and its access mode/version may differ from the client's expectation.
+   Distinguish "service not provisioned", "client ignored a working service" and a
+   genuine contract mismatch; do not report 401/422 as a contestant defect without
+   checking which service the documented commands actually connect to.
+   `/opt/wheels/player` holds a resolved offline wheel set (PIP_FIND_LINKS); it is a
+   compatibility cache, not permission to claim the contestant's original pin set
+   installed from the public index.
 3. Run the documented baseline/target/regression checks. Capture each command,
    working directory, exit code, stdout/stderr and passed/failed/skipped counts.
    Preserve full logs under `/output/evidence/`; a pipeline's final command must

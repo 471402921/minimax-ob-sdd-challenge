@@ -22,6 +22,8 @@
 - `batch.py`：默认只打印计划；`--execute` 才运行，硬上限4个trial/2个backend槽，检查资源、租约、固定快照、任务锁，按进程组监督并保存状态；无自动重试、claim或callback。
 - `resources.py`：只读主机可用内存、磁盘、PSI、CPU和swap计数，核心信号缺失时fail-closed。
 - `prewarm.py` + `images/`：离线依赖、seekdb预检和PowerContext服务预热；基础镜像使用本地不可变sha256 ID，选手快照只在运行时注入。
+- `prewarm_wheels.py`：推荐路径。同一份已解析 wheel 集同时生成服务端 venv 和选手 `PIP_FIND_LINKS`，避免服务端1.2.0/客户端1.4.0 这类版本偏离；断网选手 bootstrap 实测 26 秒。旧 `prewarm.py`（源码装1.2.0）仅供对照。
+- `dependency_audit.py`：只读扫 `requirements*.txt`/`pyproject` 的精确 pin，核对本地 wheel 元数据；`batch.py` 对未命中缓存的依赖默认拒绝启动（`--allow-uncached` 需明示）。这是“已解析依赖是否缓存”的检查，不证明传递闭包或官方源可用。
 - `template/`：Agent 可联网，非 root、无 sudo、无宿主 Docker socket；固定提交在只读
   `/submission/minimax`，可在 `/work/review` 复制后运行；输出到 `/output`。
 - 独立 verifier：无需模型，不执行学生代码，只核对报告身份、结构、证据文件哈希。
@@ -40,6 +42,8 @@
 
 - 批处理运行器已实际完成2路和4路合成 oracle 批次；4路批次4/4 finished，资源采样期间最低 MemAvailable约35.28GiB；无模型调用、无平台操作。
 - 预热镜像 `harbor/prewarm:local` 已构建并通过健康检查：Pi1.4.0、seekdb `1.4.0.post2` 预检、PowerContext ready/scope/0600服务描述均通过。服务版本和依赖替换仍须在报告中披露。
+- `harbor/review-wheels:local` 已构建（同源 wheel 集，PowerContext **1.4.0** 服务端）：选手 `requirements.txt` 断网安装25秒、`pip check` 通过；选手自启服务10秒、完整样例回放95秒。
+- 内存对照（同一热路径）：1GiB 完成但 cgroup `max` 触顶3804次；2GiB 零触顶零OOM且耗时相同。默认改为普通任务2GiB、后端4GiB，拒绝1GiB默认。对照未含Pi模型进程。
 - Harbor离线测试现为143项通过；新增资源、批处理、预热和服务启动失败保护测试。
 
 - 既有 Harbor 试点离线回归和新增批处理/预热测试通过；既有 judge 回归185项通过、0 FAIL、0 skip；Harbor lint 无问题。
