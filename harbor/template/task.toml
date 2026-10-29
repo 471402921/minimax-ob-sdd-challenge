@@ -15,7 +15,10 @@ auto_callback = false
 network_mode = "public"
 workdir = "/work/review"
 cpus = 2
-memory_mb = 4096
+# Written by prepare.py from --memory-mb. Default 2048 is the measured floor
+# (zero cgroup limit/OOM events on an offline install + service + sample replay).
+# Use 4096+ for unusually heavy submissions; 1 GiB repeatedly hit the limit.
+memory_mb = 2048
 storage_mb = 8192
 build_timeout_sec = 900
 

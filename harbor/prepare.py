@@ -74,8 +74,8 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
     if services and not base_image:
         raise ValueError("services require an explicitly prewarmed image")
     # 2 GiB is the measured floor for a real submission (install + service +
-    # sample); 1 GiB completed but hit the cgroup limit thousands of times.
-    memory_mb = memory_mb if memory_mb is not None else (4096 if services else 2048)
+    # sample). 1 GiB completed but hit the cgroup limit thousands of times.
+    memory_mb = memory_mb if memory_mb is not None else 2048
     if not 2048 <= memory_mb <= 8192:
         raise ValueError("memory_mb must be 2048..8192; 1 GiB is measured but not accepted as a default")
     if task_id <= 0:
@@ -124,7 +124,7 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
         (temp / "tests/expected.json").write_text(json.dumps(identity, indent=2))
         config = temp / "task.toml"
         config.write_text(config.read_text().replace("__TASK_NAME__", name)
-                          .replace("memory_mb = 4096", f"memory_mb = {memory_mb}"))
+                          .replace("memory_mb = 2048", f"memory_mb = {memory_mb}"))
         # Oracle is a transport/report check only; it performs no contestant grading.
         (temp / "solution/expected.json").write_text(json.dumps(identity, indent=2))
         temp.rename(destination)
@@ -145,7 +145,7 @@ def main() -> int:
                    help="bootstrap an evaluator-side PowerContext; only when the submission "
                         "documents an EXTERNAL service it does not start itself")
     p.add_argument("--memory-mb", type=int, default=None,
-                   help="agent environment memory (2048..8192); default 4096 with --services else 2048")
+                   help="agent environment memory (2048..8192); default 2048, use 4096+ for heavy tasks")
     args = p.parse_args()
     if args.synthetic and (args.repo or args.commit):
         p.error("synthetic cannot be combined with repo/commit")

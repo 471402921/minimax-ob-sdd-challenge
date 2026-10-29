@@ -119,7 +119,10 @@ class StagingTests(unittest.TestCase):
             self.assertIn("memory_mb = 2048", (light / "task.toml").read_text())
             self.assertNotIn("runtime-profile.json", [p.name for p in (light / "environment/input").iterdir()])
             heavy = prepare.prepare(12, self.repo, self.commit, base_image=image, services=True)
-            self.assertIn("memory_mb = 4096", (heavy / "task.toml").read_text())
+            # 2 GiB is the measured default for every profile, including services.
+            self.assertIn("memory_mb = 2048", (heavy / "task.toml").read_text())
+            bigger = prepare.prepare(15, self.repo, self.commit, memory_mb=4096)
+            self.assertIn("memory_mb = 4096", (bigger / "task.toml").read_text())
             profile = json.loads((heavy / "environment/input/runtime-profile.json").read_text())
             self.assertEqual(profile["base_image"], image)
             self.assertTrue(profile["services"])

@@ -43,7 +43,7 @@
 - 批处理运行器已实际完成2路和4路合成 oracle 批次；4路批次4/4 finished，资源采样期间最低 MemAvailable约35.28GiB；无模型调用、无平台操作。
 - 预热镜像 `harbor/prewarm:local` 已构建并通过健康检查：Pi1.4.0、seekdb `1.4.0.post2` 预检、PowerContext ready/scope/0600服务描述均通过。服务版本和依赖替换仍须在报告中披露。
 - `harbor/review-wheels:local` 已构建（同源 wheel 集，PowerContext **1.4.0** 服务端）：选手 `requirements.txt` 断网安装25秒、`pip check` 通过；选手自启服务10秒、完整样例回放95秒。
-- 内存对照（同一热路径）：1GiB 完成但 cgroup `max` 触顶3804次；2GiB 零触顶零OOM且耗时相同。默认改为普通任务2GiB、后端4GiB，拒绝1GiB默认。对照未含Pi模型进程。
+- 内存对照（同一热路径）：1GiB 完成但 cgroup `max` 触顶3804次；2GiB 零触顶零OOM且耗时相同。现所有 profile 默认 2GiB（含 services），重任务用 `--memory-mb 4096`，拒绝1GiB默认。对照未含Pi模型进程，首批需采样峰值；batch 的 4/6GiB 准入预算有意未随之降低。
 - Harbor离线测试现为143项通过；新增资源、批处理、预热和服务启动失败保护测试。
 
 - 既有 Harbor 试点离线回归和新增批处理/预热测试通过；既有 judge 回归185项通过、0 FAIL、0 skip；Harbor lint 无问题。
