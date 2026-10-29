@@ -16,10 +16,20 @@
 - Batch supervisor completed both 2-task and 4-task synthetic oracle runs. Four-task
   run: 4/4 finished; minimum sampled host MemAvailable approximately35.28GiB.
   These are lightweight transport checks, NOT real-model/backend capacity proof.
-- Offline baseline: 143 Harbor tests, 185 judge assertions, 9 recovery tests and
+- Offline baseline (latest): 197 Harbor tests, 185 judge assertions, 9 recovery tests and
   3 confirmed-inaccessible tests passed; generated-task lint and shell syntax pass.
 - User-systemd single-task launcher now separates chat latency from the40-minute
   wall limit. Current real single-task run is not assigned a result by this document.
+- 4-way real batch `batch4-run` (2026-10-29): 4/4 trials completed, 0 errors,
+  `report_valid=1` on all four, wall clock 16.3 min at 4 concurrent with 2 GiB each.
+  Human-reviewed verdicts: 3 pass, 1 fail (missing declared sibling dependency, client
+  API mismatch against powercontext 1.4.0, and an uncommitted data fixture).
+- `triage.py` backtest on that batch: 3 auto-pass candidates + 1 human escalation,
+  matching the human verdicts 4/4. A single 4-task batch is a smoke test, not calibration.
+- Measured waste in that batch: two trials each spent 240.1 s on a network pip attempt
+  although every pin was cached. Mitigations landed: optional `PIP_NO_INDEX` when the
+  audit passes, and a single hashed reusable venv instead of 6-8 reinstalls. Not yet
+  re-measured on a new batch.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record

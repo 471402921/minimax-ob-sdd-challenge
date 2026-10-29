@@ -23,6 +23,7 @@
 - `resources.py`：只读主机可用内存、磁盘、PSI、CPU和swap计数，核心信号缺失时fail-closed。
 - `prewarm.py` + `images/`：离线依赖、seekdb预检和PowerContext服务预热；基础镜像使用本地不可变sha256 ID，选手快照只在运行时注入。
 - `prewarm_wheels.py`：推荐路径。同一份已解析 wheel 集同时生成服务端 venv 和选手 `PIP_FIND_LINKS`，避免服务端1.2.0/客户端1.4.0 这类版本偏离；断网选手 bootstrap 实测 26 秒。旧 `prewarm.py`（源码装1.2.0）仅供对照。
+- `triage.py`：确定性通过闸门，只读报告、证据哈希与暂存身份；六维全 verified 才标记 auto-pass 候选，任一维 failed 一律转人工，永不自动判 0；`--submit-auto-pass` 需 `--yes` 与 `--max`。
 - `dependency_audit.py`：只读扫 `requirements*.txt`/`pyproject` 的精确 pin，核对本地 wheel 元数据；`batch.py` 对未命中缓存的依赖默认拒绝启动（`--allow-uncached` 需明示）。这是“已解析依赖是否缓存”的检查，不证明传递闭包或官方源可用。
 - `template/`：Agent 可联网，非 root、无 sudo、无宿主 Docker socket；固定提交在只读
   `/submission/minimax`，可在 `/work/review` 复制后运行；输出到 `/output`。
@@ -44,7 +45,7 @@
 - 预热镜像 `harbor/prewarm:local` 已构建并通过健康检查：Pi1.4.0、seekdb `1.4.0.post2` 预检、PowerContext ready/scope/0600服务描述均通过。服务版本和依赖替换仍须在报告中披露。
 - `harbor/review-wheels:local` 已构建（同源 wheel 集，PowerContext **1.4.0** 服务端）：选手 `requirements.txt` 断网安装25秒、`pip check` 通过；选手自启服务10秒、完整样例回放95秒。
 - 内存对照（同一热路径）：1GiB 完成但 cgroup `max` 触顶3804次；2GiB 零触顶零OOM且耗时相同。现所有 profile 默认 2GiB（含 services），重任务用 `--memory-mb 4096`，拒绝1GiB默认。对照未含Pi模型进程，首批需采样峰值；batch 的 4/6GiB 准入预算有意未随之降低。
-- Harbor离线测试现为143项通过；新增资源、批处理、预热和服务启动失败保护测试。
+- Harbor离线测试现为 **197 项**通过；覆盖资源、批处理、预热、服务启动失败、阶段预算、依赖审计与通过闸门。
 
 - 既有 Harbor 试点离线回归和新增批处理/预热测试通过；既有 judge 回归185项通过、0 FAIL、0 skip；Harbor lint 无问题。
 - 预热健康检查在本机需要通过一个仅用于sudo docker CLI的shim执行；`prewarm.py`本身不自动sudo，生产worker应给运行用户Docker权限。
