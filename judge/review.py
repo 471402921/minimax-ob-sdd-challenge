@@ -42,12 +42,14 @@ import os
 import subprocess
 import sys
 import time
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import credential_store
 from evaluate import DEFAULT_SCOPE_DIR, collect_evidence, summarize, write_evidence  # noqa: E402
 from ob_client import (  # noqa: E402
     FAIL_OTHER,
@@ -202,6 +204,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         "deadline_epoch": safe_deadline,
         "timeout_minutes": client.timeout_minutes,
         "stage": "claimed",
+        "scope_dir": args.scope_dir or None,
         "checkout_dir": str(checkout_dir),
     }
     _atomic_write_json(_pending_path(workdir, task.task_id), pending)
@@ -213,6 +216,15 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     print(f"  建议截止：{datetime.fromtimestamp(safe_deadline).strftime('%H:%M:%S')}"
           f"（{_fmt_remaining(safe_deadline - time.time())}）")
     print("=" * 66)
+
+    # Save recovery material before clone, separate from all redacted receipts.
+    try:
+        credential_store.save(workdir, pending, task.git_repo)
+    except credential_store.CredentialStoreError:
+        pending.update(stage="credential_save_failed")
+        _atomic_write_json(_pending_path(workdir, task.task_id), pending)
+        print("私密恢复凭据保存失败；已领取任务仍在计时。未clone、未回传。", file=sys.stderr)
+        return 4
 
     # ── 拉取 ──
     try:
@@ -264,6 +276,59 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover(args: argparse.Namespace) -> int:
+    """Recover only this task's fixed version, preserving the failed checkout."""
+    workdir, task_id = args.workdir.resolve(), args.task_id
+    pend_path = _pending_path(workdir, task_id)
+    if _submitted_path(workdir, task_id).exists() or not pend_path.is_file():
+        print("拒绝恢复：任务不存在或已回传。", file=sys.stderr)
+        return 5
+    pending = json.loads(pend_path.read_text())
+    if pending.get("stage") != "fetch_failed":
+        print("拒绝恢复：仅支持fetch_failed任务。", file=sys.stderr)
+        return 5
+    if pending["platform_deadline_epoch"] <= time.time():
+        print("拒绝恢复：租约已过期；不能续租或重新领取替代任务。", file=sys.stderr)
+        return 6
+    # A requested or previously frozen commit is mandatory for recovery.
+    commit = pending.get("commit_id") or pending.get("commit_requested")
+    if not commit:
+        print("拒绝恢复：缺少固定commit，需要人工确认版本。", file=sys.stderr)
+        return 5
+    try:
+        raw_url = credential_store.load(workdir, pending)
+    except credential_store.CredentialStoreError:
+        print("无可用的任务级恢复凭据；旧任务的脱敏记录无法还原PAT。没有再次领取。", file=sys.stderr)
+        return 4
+    # Never overwrite the original failed checkout. New attempt has its own path.
+    attempt = Path(tempfile.mkdtemp(prefix=f"task-{task_id}-recovery-", dir=workdir)) / "repo"
+    try:
+        checkout = clone_and_checkout(raw_url, attempt,
+                                      branch=pending.get("branch") or pending.get("branch_requested"),
+                                      commit_id=commit)
+    except RepoFetchError as exc:
+        pending.update(fetch_fail_msg=exc.fail_msg, fetch_error=str(exc))
+        _atomic_write_json(pend_path, pending)
+        print(f"恢复检出失败（failMsg={exc.fail_msg}），未回传，租约未改变。", file=sys.stderr)
+        return 4
+    if pending["platform_deadline_epoch"] <= time.time():
+        print("检出完成但租约已过期；保留现场，禁止继续回传。", file=sys.stderr)
+        return 6
+    scope = pending.get("scope_dir", DEFAULT_SCOPE_DIR)
+    evidence = collect_evidence(checkout.path, commit_id=checkout.commit_id,
+                                branch=checkout.branch, scope_dir=scope)
+    evidence.update(task_id=task_id, player=pending.get("player"), group_id=pending.get("group_id"))
+    ev_path = workdir / f"task-{task_id}.evidence.json"
+    write_evidence(evidence, ev_path)
+    pending.update(stage="awaiting_review", checkout_dir=str(checkout.path),
+                   commit_id=checkout.commit_id, branch=checkout.branch,
+                   evidence_path=str(ev_path), evidence_summary=summarize(evidence), scope_dir=scope)
+    _atomic_write_json(pend_path, pending)
+    _log(args.runlog.resolve(), "review_recovered", task_id=task_id, commit_id=checkout.commit_id)
+    print(f"已恢复 taskId={task_id} commit={checkout.commit_id}；未领取、未回传，租约未改变。")
+    return 0
+
+
 # ─────────────────────────── 阶段 2：submit ───────────────────────────
 
 
@@ -291,11 +356,14 @@ def cmd_submit(args: argparse.Namespace) -> int:
         return 5
 
     remaining = pending["platform_deadline_epoch"] - time.time()
-    if remaining <= 0:
+    allow_expired = bool(getattr(args, "allow_expired", False))
+    if remaining <= 0 and not allow_expired:
         print(f"拒绝：taskId={task_id} 已超过平台超时（{_fmt_remaining(remaining)}），"
               "任务可能已被重新领取，此时回传可能被拒或覆盖他人结果。\n"
-              "  请先 `review.py list` 并联系 OB 确认任务状态。", file=sys.stderr)
+              "  如已得到平台方明确允许，使用 --allow-expired；否则联系 OB 确认任务状态。", file=sys.stderr)
         return 6
+    if remaining <= 0 and allow_expired:
+        print(f"警告：taskId={task_id} 已过期；用户显式要求尝试回传，平台可能拒绝或已重新分配。", file=sys.stderr)
 
     # 还原 Task。claim 文件里的 gitRepo 已脱敏（***），所以只用它来取 subQuestions
     # 等结构字段，回传不需要仓库地址。
@@ -308,7 +376,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
     if args.verdict == "error":
         fail_msg = args.fail_msg if args.fail_msg is not None else FAIL_OTHER
         try:
-            client.report_failure(task, fail_msg)
+            response = client.report_failure(task, fail_msg)
+            _require_ack(response, task_id)
         except (OBProtocolError, OBRemoteError) as exc:
             _log(runlog, "review_submit_error_rejected", task_id=task_id, error=str(exc))
             print(f"回传被拒：{exc}", file=sys.stderr)
@@ -349,13 +418,14 @@ def cmd_submit(args: argparse.Namespace) -> int:
     messages = {sid: args.reason.strip()[:480] for sid in sub_ids}
 
     try:
-        client.report_success(
+        response = client.report_success(
             task, branch=pending["branch"], commit_id=pending["commit_id"],
             verdicts=verdicts, messages=messages,
         )
+        _require_ack(response, task_id)
     except (OBProtocolError, OBRemoteError) as exc:
         _log(runlog, "review_submit_rejected", task_id=task_id, verdict=args.verdict, error=str(exc))
-        print(f"回传被拒：{exc}\n任务状态未变，仍可修正后重试（注意截止时间）。", file=sys.stderr)
+        print(f"回传未获明确确认：{exc}\n保留pending和恢复凭据。先核对平台状态；结果不确定时不可改分或改理由后重试。", file=sys.stderr)
         return 7
 
     _finish(workdir, runlog, pending, verdict=args.verdict, reason=args.reason.strip(),
@@ -364,6 +434,14 @@ def cmd_submit(args: argparse.Namespace) -> int:
     print(f"已回传 taskId={task_id} 结论={'通过' if passed else '不通过'} "
           f"commit={pending['commit_id'][:12]}")
     return 0
+
+
+def _require_ack(response: dict, task_id: int) -> None:
+    data = response.get("data") if isinstance(response, dict) else None
+    if (not isinstance(response, dict) or response.get("code") != 200
+            or not isinstance(data, dict) or type(data.get("taskId")) is not int
+            or data["taskId"] != task_id):
+        raise OBProtocolError("回传确认不明确：保留pending与凭据，不要改变结果后重试。")
 
 
 def _finish(workdir: Path, runlog: Path, pending: dict[str, Any], *, verdict: str,
@@ -382,6 +460,10 @@ def _finish(workdir: Path, runlog: Path, pending: dict[str, Any], *, verdict: st
     _atomic_write_json(_submitted_path(workdir, task_id), record)
     _pending_path(workdir, task_id).unlink(missing_ok=True)
     _log(runlog, "review_submitted", task_id=task_id, verdict=verdict, reason=reason, **extra)
+    try:
+        credential_store.delete(workdir, task_id)
+    except credential_store.CredentialStoreError:
+        print("任务已回传，但私密恢复凭据清理失败，请人工清理；不要再次回传。", file=sys.stderr)
 
 
 # ─────────────────────────── list ───────────────────────────
@@ -438,6 +520,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="手上已有未回传任务时仍继续领取（默认拒绝）")
     f.set_defaults(func=cmd_fetch)
 
+    recover = sub.add_parser("recover", help="用已保存凭据重试检出；不领取、不回传、不续租")
+    recover.add_argument("--task-id", type=int, required=True)
+    recover.set_defaults(func=cmd_recover)
+
     s = sub.add_parser("submit", help="人工结论后回传")
     s.add_argument("--task-id", type=int, required=True)
     s.add_argument("--verdict", required=True, choices=["pass", "fail", "error"],
@@ -445,6 +531,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reason", default="", help="判定理由（pass/fail 必填，写入平台子题 message）")
     s.add_argument("--fail-msg", type=int, default=None,
                    help="仅 --verdict error 用：1 branch 缺失/2 commit 缺失/4 clone 失败/100 其他")
+    s.add_argument("--allow-expired", action="store_true",
+                   help="显式尝试回传已过期任务（危险：平台可能已重新分配；默认拒绝）")
     s.set_defaults(func=cmd_submit)
 
     ls = sub.add_parser("list", help="列出悬着与已回传的任务及剩余时间")

@@ -1,0 +1,38 @@
+schema_version = "1.4"
+# Root fields MUST precede TOML tables.
+artifacts = ["/output"]
+
+[task]
+name = "minimax/__TASK_NAME__"
+version = "0.1.0"
+description = "Review a fixed submission; reward measures report validity, NOT contestant score."
+
+[metadata]
+phase = "review-pilot"
+auto_callback = false
+
+[environment]
+network_mode = "public"
+workdir = "/work/review"
+cpus = 2
+memory_mb = 4096
+storage_mb = 8192
+build_timeout_sec = 900
+
+[agent]
+user = "reviewer"
+timeout_sec = 1800
+network_mode = "public"
+
+[verifier]
+timeout_sec = 60
+environment_mode = "separate"
+# Docker-level network_mode:none is enforced by tests/docker-compose.yaml.
+# Harbor's no-network policy requires nftables support absent on this worker.
+network_mode = "public"
+
+[verifier.environment]
+network_mode = "public"
+cpus = 1
+memory_mb = 1024
+storage_mb = 2048

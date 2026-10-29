@@ -29,6 +29,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKDIR="$ROOT_DIR/workdir"
 REVIEW_PY="$SCRIPT_DIR/review.py"
 PROBE_PY="$SCRIPT_DIR/probe.py"
+OPTIONS_PY="$SCRIPT_DIR/submission_options.py"
 PY="${OB_JUDGE_PYTHON:-python3}"
 
 readonly QUESTION_ID=600077   # MiniMax 一级赛题；Token 也只授权这一题，不接受环境变量覆盖
@@ -51,7 +52,7 @@ usage() {
       --minutes N  平台超时分钟数（默认 60，范围 1~240）
   judge/review.sh list
       查看悬着（未回传）的任务与剩余时间。
-  judge/review.sh submit <taskId> <pass|fail|error> [--reason 理由] [--fail-msg N] [--yes]
+  judge/review.sh submit <taskId> <pass|fail|error> [--reason 理由] [--fail-msg N] [--allow-expired] [--yes]
       人工审阅后回传（不可逆）。pass/fail 必须带 --reason；
       error 表示无法评测（--fail-msg：1 branch 缺失 / 2 commit 缺失 / 4 clone 失败 / 100 其他）。
 
@@ -189,6 +190,10 @@ cmd_check() {
     exit 2
   fi
   say ""
+  say "== 题目能力（只读 GET submissionOptions，不带 Token）=="
+  # 偏差只警告：平台改了满分/题型要人工确认，但不该挡住审阅本身
+  "$PY" "$OPTIONS_PY" || true
+  say ""
   say "== 当前悬着的任务 =="
   "$PY" "$REVIEW_PY" --workdir "$WORKDIR" list
   say ""
@@ -270,7 +275,7 @@ cmd_fetch() {
 
 cmd_submit() {
   [[ $# -ge 2 ]] || die "用法：judge/review.sh submit <taskId> <pass|fail|error> [--reason 理由] [--fail-msg N] [--yes]"
-  local task_id="$1" verdict="$2" reason="" fail_msg="" yes=0
+  local task_id="$1" verdict="$2" reason="" fail_msg="" allow_expired=0 yes=0
   shift 2
   while (($# > 0)); do
     case "$1" in
@@ -280,6 +285,7 @@ cmd_submit() {
       --fail-msg)
         [[ $# -ge 2 ]] || die "--fail-msg 需要一个数值"
         fail_msg="$2"; shift 2 ;;
+      --allow-expired) allow_expired=1; shift ;;
       --yes|-y) yes=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "未知参数：$1（见 judge/review.sh --help）" ;;
@@ -336,6 +342,10 @@ PY
               submit --task-id "$task_id" --verdict "$verdict")
   if [[ -n "$reason" ]]; then args+=(--reason "$reason"); fi
   if [[ -n "$fail_msg" ]]; then args+=(--fail-msg "$fail_msg"); fi
+  if ((allow_expired)); then
+    say "            ⚠️ 已显式允许尝试过期任务；平台可能已重新分配，回传可能被拒绝。"
+    args+=(--allow-expired)
+  fi
   exec "$PY" "$REVIEW_PY" "${args[@]}"
 }
 

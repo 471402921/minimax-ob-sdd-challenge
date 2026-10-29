@@ -3,15 +3,19 @@
 MiniMax 赛题（`questionId=600077`，子题 `800514`，满分 20）在 OB 数据库大赛
 判题平台上的领取—评测—回传实现。
 
-协议依据：OB 方《数据库大赛联调相关文档》(2026-10-21)，`campId=21`。
+协议依据：OB 方《数据库大赛联调相关文档》(2026-10-21) 及新版 skill 的只读积压补充，`campId=21`。
+
+**当前接续入口（2026-10-29）：[运行手册](../docs/运行手册.md) / [当前状态](../docs/当前状态.md)。**
+平台已支持 `queryTaskQueueCount`，不要用领取接口探测积压。`review.sh list` 仅列本机记录。
+Harbor 的进度见 [试点验证](../harbor/VALIDATION.md)，不是生产自动判题/回传系统。
 
 ## 快速开始
 
 ```bash
-cp judge/.env.example judge/.env     # 填入 OB_JUDGE_TOKEN
-set -a; . judge/.env; set +a         # 载入环境变量
+set +x
+source "$HOME/.config/minimax-ob-judge/platform.env"  # 用户私密文件，权限600
 
-# 自检：107 项安全与协议断言，不需要 token、不接触平台
+# 自检：最近185项安全与协议断言；不领取/回传真实任务，部分断言会访问GitHub探针仓库
 python3 judge/test_harness.py
 
 # 安全探测：验证连通性/Token/请求格式，保证不领取任何任务
@@ -20,8 +24,7 @@ python3 judge/probe.py
 # 本地验证证据采集，完全不接触平台
 python3 judge/run_judge.py --local-repo /path/to/some/repo
 
-# 联调（仅限联调！会无条件回传 stub 结果，见下文警告）
-python3 judge/run_judge.py --once --mode stub-pass
+# 不在日常操作中运行 --mode stub-*：会对真实领取任务直接写入示例结果。
 ```
 
 ## 🧑‍⚖️ 正式判题：人工审阅入口（推荐 `review.sh`）
@@ -32,7 +35,7 @@ python3 judge/run_judge.py --once --mode stub-pass
 正式判题推荐使用带交互护栏的脚本 `judge/review.sh`（底座引擎为 `review.py`），把「领取留证」与「回传」拆成两步，中间留给人审阅：
 
 ```bash
-# 0. 预检环境与连通性（使用无交集题目探测，100% 不会领取任务）
+# 0. 预检环境与连通性（无交集假设下不领取；包含submissionOptions，不含队列计数）
 ./judge/review.sh check
 
 # 阶段 1：领取 1 条 → 拉取 → 采证 → 保留检出 → 写 pending → 不回传
@@ -52,7 +55,7 @@ python3 judge/run_judge.py --once --mode stub-pass
 
 底层直接调用 Python 也是支持的（参数更自由）：
 ```bash
-python3 judge/review.py fetch --timeout-minutes 60
+python3 judge/review.py --timeout-minutes 60 fetch
 python3 judge/review.py submit --task-id <id> --verdict pass --reason "…"
 python3 judge/review.py list
 ```
@@ -63,7 +66,7 @@ python3 judge/review.py list
 | --- | --- |
 | `fetch` 不回传任何东西 | 未经审阅就把结果写进平台 |
 | `fetch` 打印硬截止时间；`pending` 截止早于平台超时 3 分钟 | 审阅拖过超时，任务被重领 |
-| 手上有未回传任务时拒绝再次 `fetch` | 悬空面越滚越大 |
+| 手上有未超过平台硬超时的 pending 时拒绝再次 `fetch`；过期记录留档但不阻塞 | 悬空面扩大或历史超时导致永久死锁 |
 | `submit` 重新核对检出 `HEAD` == fetch 时记录的 commit | 看的是 A 提交、回传的是 B 提交 |
 | 已回传任务拒绝二次回传 | 回传不可逆，不能改分 |
 | 已超平台超时的任务拒绝回传 | 任务可能已被他人重领，回传会覆盖或被拒 |
@@ -72,10 +75,27 @@ python3 judge/review.py list
 | 回传的 `commitId` 必须是完整 40/64 位 | 平台拒绝短 SHA |
 | `fetch` 任一步异常都**不删现场** | 旧 `manual` 路径的现场被毁问题 |
 
-**审阅时限**：平台默认 30 分钟未回传即可被重领（最多再领 3 次）。人工审阅要在这个窗口内完成；
-不够时用 `--timeout-minutes` 调大（须长于「审阅 + 回传」总耗时）。`fetch` 会把截止时间打出来。
+**审阅时限**：`review.sh fetch` 默认60分钟；底层 `review.py` 默认30分钟，重领次数按请求配置。
+入口脚本用 `--minutes` 调整，底层Python用全局 `--timeout-minutes`（须放在fetch前）。
+时限必须覆盖审阅与回传，无独立续租接口；`fetch` 会打印截止时间。
 
-## 🔥 探测必须用 probe.py，不要直接打领取接口
+## 失败恢复与私密仓库凭据
+
+`review.py fetch` 现在在clone前私密保存任务仓库凭据（仓库外700/600），普通领取记录和日志
+仍脱敏。完整commit本地缺失时，会先带认证定向fetch；认证失败不能证明commit不存在。
+`python3 judge/review.py recover --help` 查看恢复入口：不重新领取、不续租、不回传，保留旧现场。
+当前只接入review.py路径，旧run_judge.py不包含此恢复能力。
+回传ACK明确匹配taskId后清理凭据；未确认/过期任务不自动丢弃恢复数据。
+位置、权限、失败处理及测试见[运行手册](../docs/运行手册.md)。
+
+## 平台积压计数（只读，新增）
+
+使用 [平台 skill](../skills/techcamp-platform-integration/SKILL.md) 的 `queue-count`，
+命令与凭据映射见 [运行手册 §2](../docs/运行手册.md)。新版固定提交为 `e7943125`。
+`waitCount` 为待执行任务条数；`runCount` 为执行中，包含超时未结束任务；不是队伍数。
+该查询不领取/锁定/续租。错误、404、鉴权失败不能当0。`review.sh check/list` 尚未集成这个计数。
+
+## 🔥 不要用领取接口探测积压；旧 probe 的适用边界
 
 `queryOneTaskRecord` **不是只读查询**。返回非 null 即代表任务已进入执行中，
 必须评测并回传。
@@ -87,8 +107,9 @@ python3 judge/review.py list
 
 `probe.py` 用**无交集的 questionId**（默认 seekdb 的 600069）探测：
 文档 §2.3 说明可领范围 = 授权赛题 ∩ 请求筛选，两者无交集时服务端必然返回
-`data:null`，**不可能领到任务**。用它验证连通性是零风险的，
-并且它会直接拒绝 `--question-id 600077`。
+`data:null`。这是依赖Token授权与筛选无交集的旧探测，不是只读接口本身的保证；
+授权范围若变更须重新核实。它会拒绝 `--question-id 600077`。
+现在查看积压请直接使用只读 `queue-count`。
 
 `run_judge.py` 则会把完整领取响应先落到 `workdir/claims/` 再处理，
 即使中途崩溃也能查清领了什么。
@@ -99,7 +120,7 @@ python3 judge/review.py list
 
 | 凭证 | 处理方式 |
 | --- | --- |
-| MiniMax Token | 只经 `OB_JUDGE_TOKEN` 环境变量传入；`repr()` 已屏蔽；`.env` 已 gitignore |
+| OB MiniMax赛题评分Token | 从本机私密 `platform.env` 载入 `OB_JUDGE_TOKEN`；不是模型API Key；不进argv/日志/仓库 |
 | 选手 GitHub PAT | 只经 `GIT_ASKPASS` 环境变量传给 git 子进程；不进 argv、不进 `.git/config`、不进日志 |
 
 `git clone https://user:pat@github.com/...` 是**错误做法** —— PAT 会出现在
@@ -108,17 +129,24 @@ python3 judge/review.py list
 
 `.gitignore` 已覆盖 `OB方参考/`、`.env`、`secrets/`、`runs/`、`workdir/`。
 提交前可用 `git status --porcelain --ignored | grep '^!!'` 复核。
+`skills/`、`harbor/`、`docs/` 未被整体忽略：不要盲目 `git add -A`。
+私有来源的 `skills/techcamp-platform-integration/` 尚未确认公开再分发许可，暂勿stage/commit/push。
 
 ## 文件
 
 | 文件 | 职责 |
 | --- | --- |
 | `ob_client.py` | 领取 `queryOneTaskRecord` + 回传 `synchronizeTaskRecord`，业务 code 校验 |
-| `repo_fetch.py` | PAT 安全拉取、branch/commit 解析、failMsg 映射 |
+| `repo_fetch.py` | PAT安全拉取、完整SHA认证补取、branch/commit解析、failMsg映射 |
+| `credential_store.py` | 仓库外任务级恢复凭据；租约/版本绑定；700/600；终态清理 |
+| `test_recovery.py` | 离线私密存储/恢复/ACK/认证补取回归 |
 | `evaluate.py` | 客观证据采集（只读）+ judge 接口 |
 | `run_judge.py` | 主循环：领取 → 拉取 → 评测 → 回传 |
-| `probe.py` | 零风险连通性探测（不可能领取任务） |
-| `test_harness.py` | 安全与协议回归测试（49 项断言） |
+| `probe.py` | 旧无交集题号探测；依赖授权边界成立，不用于计数 |
+| `submission_options.py` | 不带Token的题目能力查询（非队列计数） |
+| `review.sh` / `review.py` | 带护栏的人工fetch → 审阅 → submit，两阶段入口 |
+| `test_harness.py` | 安全与协议回归测试（最近185项断言，0 FAIL/skip；探针仓库不可用时网络断言转skip） |
+| `../skills/techcamp-platform-integration/` | 上游私有来源本地副本；含queue-count/outbox客户端，不能直接替换本机pending流程 |
 
 ## 平台协议要点（易错处）
 
@@ -126,7 +154,7 @@ python3 judge/review.py list
 
 1. **不要拿领取接口做连通性探测。** 它有副作用 —— 返回 `taskId` 即代表任务
    已进入执行中，拿完不处理会一直挂到超时被重领。`data: null` 只表示本轮无任务。
-   探测请用 `probe.py`（无交集 questionId）。
+   现在查看积压用 `queryTaskQueueCount`；`probe.py` 仅是旧无交集探测。
 2. **HTTP 200 不代表成功**，必须检查响应体的业务 `code`。
 3. **`testCaseResult` 是序列化后的字符串**，不是嵌套 JSON 数组。
 4. **CASES 协议禁止顶层 `score` / `message`**，说明要放进子题项内。
@@ -140,6 +168,8 @@ python3 judge/review.py list
 9. **不要对 400/403/409 无限重试。** 503（队伍校验暂不可用）可退避重试。
 10. **领取只按 `questionId` 筛选**，不要传 `testCases` / `player`，也不要用 `testSuite`
     按名称筛（中文名与空格易错）。
+11. **人工回传也需要冻结请求与ACK核对。** 上游skill已有outbox；本地review.py尚未完整接入。
+    网络结果不确定时不要改理由/分数后重试。
 
 ## ⚠️ 当前约束：平台只接受二值结果
 
@@ -160,20 +190,23 @@ python3 judge/review.py list
 ### 二值制下通过标准必须可证伪
 
 只有「过 / 不过」两档，标准的可证伪性比分层制更重要，否则评委间无法对齐。
-计划用 Jev（`typesafe_evaluate`）做结构化辅助判定，需注意建议书的一条硬约束：
+早期曾建议用 Jev（`typesafe_evaluate`）辅助；当前在试验 Harbor + Pi 实际复跑，尚未冻结
+自动判分规则。两者都必须遵守建议书的约束：
 
 > 「不能用一个黑箱大模型印象分替代本项」
 
-所以 Jev 应当拆成**多个具名问题**（每题只判一件事、有明确 criteria、输出概率），
+若使用 Jev，应拆成**多个具名问题**（每题只判一件事、有明确 criteria、输出概率），
 而不是丢一句"这个作品好不好"。同时需保留复核样本与争议处理路径。
 `ob_client.py` 已实现 `resultType=2` 分支，万一 OB 后续改配置可直接启用。
 
-## 联调前的待确认清单
+## 当前待确认清单
 
-- [x] 连通性 / Token / 请求格式已验证（`probe.py`，零领取风险）
+- [x] 连通性 / Token / 请求格式已验证；新版只读queue-count也已在线返回有效结果
 - [x] 确认 600077/800514 保持 `resultType=1` 二值（通过满分 / 不通过 0）
 - [x] 满分确认为 **20 分**（此前 30 为联调占位值）
-- [ ] 向 OB 确认队列里现存任务是否为联调预埋的测试提交
-- [ ] 确认评测耗时，据此定 `runTaskTimeOutMinutes`（默认 30min 待实测）
+- [ ] 计数接口只能确认规模；若需区分测试/真实提交，仍须向OB确认，不能从计数推断
+- [ ] 按真实作品批次统计耗时/容量，据此定租约；review.sh默认60min不代表足够覆盖所有作品
 - [ ] 确认 `gitRepo` 里 PAT 的权限范围与过期时间
-- [ ] 冻结通过标准后实现 `judge()` 自动判定（计划用 Jev 做结构化辅助）
+- [ ] 冻结通过标准，完成Harbor真实作品正反例校准，再决定自动判定/人工复核策略
+- [ ] 完整接入不可变outbox、回传ACK及不确定结果原样重试
+- [ ] 合并queue-count到统一入口，并修正check能力查询报警后仍打印全部通过的文案

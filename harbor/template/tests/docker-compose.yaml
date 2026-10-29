@@ -1,0 +1,4 @@
+# Verifier only. No egress sidecar or privileged capabilities required.
+services:
+  main:
+    network_mode: none

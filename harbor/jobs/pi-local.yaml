@@ -1,0 +1,18 @@
+# Harbor 0.25.0. Model and endpoint supplied on CLI, key by ENV NAME only.
+# Run from repository root. No host Pi auth/config/memory is mounted.
+jobs_dir: runs/harbor
+n_attempts: 1
+# Initial shadow-evaluation cap: 4 Harbor trials, subject to M Plan QPS/TPM and backend capacity.
+# Lower this to 1 if 429s, p95 latency, backend pressure or lease risk appears.
+n_concurrent_trials: 4
+retry:
+  max_retries: 0
+environment:
+  type: docker
+  delete: true
+agents:
+  - import_path: pi_preinstalled:PreinstalledPi
+    model_api_key_name: OB_EVAL_MODEL_KEY
+    kwargs:
+      version: "1.4.0"
+# No tasks, endpoint or credentials hard-coded. Supply --path and --model.

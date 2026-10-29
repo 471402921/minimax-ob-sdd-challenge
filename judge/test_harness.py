@@ -1039,4 +1039,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from unittest.mock import patch
+    # Fixture credentials must not populate the operator's real recovery store.
+    with tempfile.TemporaryDirectory(prefix="judge-credential-tests-") as private:
+        with patch.dict(os.environ, {"OB_JUDGE_CREDENTIAL_DIR": private}):
+            raise SystemExit(main())

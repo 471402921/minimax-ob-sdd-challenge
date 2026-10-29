@@ -9,7 +9,7 @@ PAT 是短期凭证，必须当作密钥对待：
 - **不进 argv**：``git clone https://user:pat@...`` 会让 PAT 出现在 ``ps``
   进程列表里，也会写进 ``.git/config``。这里改用 ``GIT_ASKPASS``，
   凭证只经环境变量传给 git 子进程。
-- **不落盘**：clone 用的是清洗过的 URL，``.git/config`` 里不含凭证。
+- **不进检出目录**：clone 用清洗后的 URL；任务恢复凭据由 credential_store 单独私密保存。
 - **不进日志**：``redact()`` 在任何输出路径上把凭证替换成 ``***``。
 - **不进异常**：git 的 stderr 也可能带 URL，统一脱敏后才抛出。
 """
@@ -213,10 +213,29 @@ def clone_and_checkout(
 
         if commit_id:
             want = commit_id.lower()
-            rev_parse = _run_git(
-                ["rev-parse", "--verify", f"{want}^{{commit}}"],
-                cwd=dest, env=env, timeout=60, fail_msg=2,
-            )
+            if not re.fullmatch(r"[0-9a-f]{7,64}", want):
+                raise RepoFetchError("任务 commitId 不是十六进制 SHA", 2)
+            try:
+                rev_parse = _run_git(
+                    ["rev-parse", "--verify", f"{want}^{{commit}}"],
+                    cwd=dest, env=env, timeout=60, fail_msg=2,
+                )
+            except RepoFetchError:
+                # A full clone can omit an unadvertised commit. Fetch the exact
+                # object while the task credential/askpass is still available.
+                if not _FULL_SHA_RE.fullmatch(want):
+                    raise
+                try:
+                    _run_git(["fetch", "--no-tags", "--", creds.clean_url, want],
+                             cwd=dest, env=env, timeout=clone_timeout, fail_msg=4)
+                except RepoFetchError as exc:
+                    if any(s in str(exc).lower() for s in ("not our ref", "couldn't find remote ref", "unadvertised object")):
+                        raise RepoFetchError("远端拒绝提供指定 commit", 2) from None
+                    raise  # Authentication/network failure is not proof of a missing commit.
+                rev_parse = _run_git(
+                    ["rev-parse", "--verify", f"{want}^{{commit}}"],
+                    cwd=dest, env=env, timeout=60, fail_msg=2,
+                )
             resolved = rev_parse.stdout.strip().lower()
             if not _FULL_SHA_RE.match(resolved):
                 raise RepoFetchError(f"无法解析出完整 commit: {resolved!r}", 2)

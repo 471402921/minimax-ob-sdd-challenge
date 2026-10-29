@@ -19,6 +19,9 @@ secrets/
 *_token.txt
 judge/local/
 
+# Private upstream integration skill snapshot; do not publish from this PUBLIC repo.
+skills/techcamp-platform-integration/
+
 # 判题运行产物：可能含选手私有代码与 PAT 痕迹
 runs/
 workdir/
