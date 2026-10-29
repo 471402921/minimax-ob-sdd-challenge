@@ -41,6 +41,7 @@ python3 judge/run_judge.py --local-repo /path/to/some/repo
 # 阶段 1：领取 1 条 → 拉取 → 采证 → 保留检出 → 写 pending → 不回传
 ./judge/review.sh fetch                # 默认 60 分钟时限，终端敲 yes 确认
 ./judge/review.sh fetch --minutes 90   # 审阅复杂作品时可调大超时
+./judge/review.sh fetch --minutes 90 --allow-multiple  # 已有未回传任务时再领一条（默认拒绝）
 
 # （人工审阅 workdir/task-<id>/ 与 workdir/task-<id>.evidence.json）
 
