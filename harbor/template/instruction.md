@@ -28,7 +28,8 @@ fallback for submissions that require an externally provisioned service, and
 its access mode may differ from the submitted client's assumption.
 All installs/bootstrap/downloads and test batches go through
 `python3 /opt/reviewer-skill/runtime_guard.py budget <install|tests|backend> -- CMD`
-so retries share one cumulative 120 s budget. On exhaustion mark the affected
+so retries share one cumulative per-phase budget (install 240 s, tests and
+backend 120 s). On exhaustion mark the affected
 checks blocked and finish the report instead of switching mirrors and retrying.
 
 Output `/output/report.json` and evidence under `/output/evidence/` following

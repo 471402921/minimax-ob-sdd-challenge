@@ -25,12 +25,13 @@ report-validator reward with a competition score.
    Preserve supplied records before scratch scripts overwrite them. The trusted
    runtime guard creates an initial not_run/review checkpoint; replace it with
    substantive evidence, never treat it as completed review. Target a 10-minute
-   warm-path review: first minute inventory, total install budget 120s, tests 120s,
+   warm-path review: first minute inventory, install budget 240s, tests 120s,
    backend diagnosis 120s, and reserve the LAST TWO MINUTES for report/hashes.
    All installation/bootstrap/download commands MUST use:
    `python3 /opt/reviewer-skill/runtime_guard.py budget install -- COMMAND ...`
    Tests and backend diagnosis likewise use `budget tests` / `budget backend`.
-   The 120s budget is CUMULATIVE across retries, not per-command. On exhaustion
+   Budgets are CUMULATIVE per phase across retries, not per-command, and the
+   trial operator can raise or lower them when the guard starts. On exhaustion
    mark blocked and move to report; do not bypass the helper or switch mirrors
    to restart the budget. pip timeout20/retries1, prefer offline wheels.
    This is a cooperative execution guard, not an OS prohibition on direct pip;

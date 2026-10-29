@@ -1,13 +1,12 @@
-"""No model/Docker. Cooperative phase budget and honest fallback checks."""
-import importlib.util
+"""No model/Docker. Cooperative phase budget, configurable limits, honest checks."""
 import contextlib
+import importlib.util
 import io
 import json
-from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location('runtime_guard', Path(__file__).resolve().parents[1]/'reviewer-skill/runtime_guard.py')
@@ -30,7 +29,7 @@ class GuardTests(unittest.TestCase):
 
     def test_budget_exhaustion_prevents_command(self):
         with tempfile.TemporaryDirectory() as tmp:
-            p=Path(tmp)/'budget';p.write_text('{"install":120}')
+            p=Path(tmp)/'budget';p.write_text(json.dumps({'used':{'install':240}}))
             with patch.object(guard.subprocess,'Popen') as start:
                 self.assertEqual(guard.budget('install',['echo','no'],p),124)
                 start.assert_not_called()
@@ -39,22 +38,48 @@ class GuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/'budget'
             self.assertEqual(guard.budget('tests',[sys.executable,'-c','import sys;sys.exit(3)'],p),3)
-            first=json.loads(p.read_text())['tests']
+            first=json.loads(p.read_text())['used']['tests']
             self.assertGreater(first,0)
             self.assertEqual(guard.budget('tests',[sys.executable,'-c','pass'],p),0)
-            self.assertGreater(json.loads(p.read_text())['tests'],first)
+            self.assertGreater(json.loads(p.read_text())['used']['tests'],first)
 
     def test_timeout_is_recorded(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(guard.LIMITS,{'install':0.05}):
             p=Path(tmp)/'budget'
             self.assertEqual(guard.budget('install',[sys.executable,'-c','import time;time.sleep(5)'],p),124)
-            self.assertGreaterEqual(json.loads(p.read_text())['install'],0.05)
+            self.assertGreaterEqual(json.loads(p.read_text())['used']['install'],0.05)
+
+    def test_limits_are_written_validated_and_read_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'budget'
+            guard.write_limits(p, {'install':300,'tests':90,'backend':150})
+            self.assertEqual(guard.read_limits(p), {'install':300,'tests':90,'backend':150})
+            self.assertEqual(guard.read_limits(Path(tmp)/'absent'), guard.LIMITS)
+            for bad in ({'install':10,'tests':90,'backend':150},
+                        {'install':300,'tests':90},
+                        {'install':'300','tests':90,'backend':150}):
+                with self.assertRaises(ValueError):
+                    guard.write_limits(p, bad)
+
+    def test_configured_limit_governs_the_phase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'budget'
+            guard.write_limits(p, {'install':30,'tests':120,'backend':120})
+            p.write_text(json.dumps({'used':{'install':30},'limits':{'install':30,'tests':120,'backend':120}}))
+            with patch.object(guard.subprocess,'Popen') as start:
+                self.assertEqual(guard.budget('install',['echo','no'],p),124)
+                start.assert_not_called()
 
     def test_monitor_duration_is_required(self):
         # A default duration let a foreground `monitor | head` block a trial.
         with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(io.StringIO()):
             guard.main(['monitor'])
         self.assertEqual(ctx.exception.code, 2)
+
+    def test_metrics_are_not_written_into_output_evidence(self):
+        source = (Path(__file__).resolve().parents[1]/'reviewer-skill/runtime_guard.py').read_text()
+        self.assertNotIn("evidence/runtime-resources.jsonl", source)
+        self.assertIn('/tmp/review-runtime-resources.jsonl', source)
 
     def test_missing_metrics_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:
