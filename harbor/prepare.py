@@ -65,7 +65,13 @@ def snapshot(repo: Path, commit: str) -> dict[str, tuple[bytes, int]]:
     return result
 
 
-def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *, synthetic: bool = False) -> Path:
+def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *, synthetic: bool = False,
+            base_image: str | None = None, services: bool = False) -> Path:
+    # An immutable local image ID, not an arbitrary registry/tag or Dockerfile fragment.
+    if base_image is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", base_image):
+        raise ValueError("prewarmed base image must be an immutable local sha256 image ID")
+    if services and not base_image:
+        raise ValueError("services require an explicitly prewarmed image")
     if task_id <= 0:
         raise ValueError("task_id must be positive")
     if synthetic:
@@ -85,6 +91,18 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
     try:
         shutil.copytree(HERE / "template", temp, dirs_exist_ok=True)
         shutil.copytree(HERE / "reviewer-skill", temp / "environment/reviewer-skill")
+        if base_image:
+            dockerfile = (HERE / 'template/environment/Dockerfile').read_text()
+            snapshot_part = dockerfile[dockerfile.index('# Only a fixed, scanned'):]
+            # BuildKit treats FROM sha256:<id> as a registry repository. Use a
+            # content-named local tag; the batch preflight verifies its exact ID.
+            local_tag = 'harbor/prewarm:sha-' + base_image.split(':', 1)[1]
+            (temp / 'environment/Dockerfile').write_text(
+                f'FROM {local_tag}\nUSER root\n' + snapshot_part)
+            (temp / 'environment/input').mkdir(exist_ok=True)
+            (temp / 'environment/input/runtime-profile.json').write_text(json.dumps({
+                'base_image': base_image, 'services': services,
+                'dependency_policy': 'explicit compatibility experiment, not original pin success'}))
         for rel, (data, mode) in files.items():
             target = temp / "environment/submission" / rel
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -92,9 +110,10 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
             target.chmod(mode)
         identity = {"task_id": task_id, "commit_id": commit, "scope": "minimax"}
         manifest = {**identity, "synthetic": synthetic, "auto_callback": False,
+                    "runtime_profile": "backend" if services else "light", "base_image": base_image,
                     "files": {p: {"sha256": hashlib.sha256(data).hexdigest(), "mode": oct(mode)}
                               for p, (data, mode) in files.items()}}
-        (temp / "environment/input").mkdir()
+        (temp / "environment/input").mkdir(exist_ok=True)
         (temp / "environment/input/manifest.json").write_text(json.dumps(manifest, indent=2))
         (temp / "tests/expected.json").write_text(json.dumps(identity, indent=2))
         config = temp / "task.toml"
@@ -114,11 +133,14 @@ def main() -> int:
     p.add_argument("--repo", type=Path)
     p.add_argument("--commit")
     p.add_argument("--synthetic", action="store_true", help="use no private source; no model required for oracle")
+    p.add_argument("--base-image", help="immutable local prewarmed sha256 image ID")
+    p.add_argument("--services", action="store_true", help="mark task as requiring prewarmed backend bootstrap")
     args = p.parse_args()
     if args.synthetic and (args.repo or args.commit):
         p.error("synthetic cannot be combined with repo/commit")
     try:
-        print(prepare(args.task_id, args.repo, args.commit, synthetic=args.synthetic))
+        print(prepare(args.task_id, args.repo, args.commit, synthetic=args.synthetic,
+                      base_image=args.base_image, services=args.services))
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         p.exit(2, f"Staging refused: {type(exc).__name__}. Check fixed commit, scope, size and credential policy.\n")
     return 0

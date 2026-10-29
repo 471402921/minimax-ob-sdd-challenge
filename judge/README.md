@@ -47,7 +47,10 @@ python3 judge/run_judge.py --local-repo /path/to/some/repo
 # 阶段 2：核对版本与时限后回传（回传不可逆，终端要求敲入 taskId 确认防误触）
 ./judge/review.sh submit <taskId> pass --reason "OceanBase 向量检索实现完整，测试通过"
 ./judge/review.sh submit <taskId> fail --reason "缺少 seekdb/OceanBase 集成，minimax/ 目录未修改"
-./judge/review.sh submit <taskId> error --fail-msg 4   # 无法拉取选手私有仓库等异常
+./judge/review.sh submit <taskId> error --fail-msg 4   # 未核实为选手交付缺陷的拉取异常；需人工决定
+# 经用户/平台方核实仓库确实不可访问：Python专用例外，判0分，不虚构检出
+python3 judge/review.py submit --task-id <taskId> --verdict fail \
+  --confirmed-repo-unavailable --reason '核实来源与无法访问依据；未执行代码测试'
 
 # 随时查看当前悬着哪些任务、还剩多少时间
 ./judge/review.sh list
@@ -69,9 +72,9 @@ python3 judge/review.py list
 | 手上有未超过平台硬超时的 pending 时拒绝再次 `fetch`；过期记录留档但不阻塞 | 悬空面扩大或历史超时导致永久死锁 |
 | `submit` 重新核对检出 `HEAD` == fetch 时记录的 commit | 看的是 A 提交、回传的是 B 提交 |
 | 已回传任务拒绝二次回传 | 回传不可逆，不能改分 |
-| 已超平台超时的任务拒绝回传 | 任务可能已被他人重领，回传会覆盖或被拒 |
+| 已超平台超时默认拒绝；平台/用户明确允许才显式 `--allow-expired` | 仅绕本地时间护栏，可能被拒或已重新分配 |
 | `pass`/`fail` 必须带 `--reason` | 二值结论无理由则无法申诉与复核 |
-| 未采证的任务不能按 `pass`/`fail` 回传 | 只能用 `--verdict error` |
+| 未采证的任务默认不能按 `pass`/`fail` 回传 | 已核实仓库不可访问的显式fail0例外除外；不是自动从clone失败推断 |
 | 回传的 `commitId` 必须是完整 40/64 位 | 平台拒绝短 SHA |
 | `fetch` 任一步异常都**不删现场** | 旧 `manual` 路径的现场被毁问题 |
 
@@ -84,13 +87,14 @@ python3 judge/review.py list
 `review.py fetch` 现在在clone前私密保存任务仓库凭据（仓库外700/600），普通领取记录和日志
 仍脱敏。完整commit本地缺失时，会先带认证定向fetch；认证失败不能证明commit不存在。
 `python3 judge/review.py recover --help` 查看恢复入口：不重新领取、不续租、不回传，保留旧现场。
+仅支持fetch_failed、有固定commit及匹配凭据、租约有效的任务；恢复不支持--allow-expired。
 当前只接入review.py路径，旧run_judge.py不包含此恢复能力。
 回传ACK明确匹配taskId后清理凭据；未确认/过期任务不自动丢弃恢复数据。
 位置、权限、失败处理及测试见[运行手册](../docs/运行手册.md)。
 
 ## 平台积压计数（只读，新增）
 
-使用 [平台 skill](../skills/techcamp-platform-integration/SKILL.md) 的 `queue-count`，
+使用本机私有 `skills/techcamp-platform-integration/SKILL.md` 对应的 `queue-count`（不随公开clone提供），
 命令与凭据映射见 [运行手册 §2](../docs/运行手册.md)。新版固定提交为 `e7943125`。
 `waitCount` 为待执行任务条数；`runCount` 为执行中，包含超时未结束任务；不是队伍数。
 该查询不领取/锁定/续租。错误、404、鉴权失败不能当0。`review.sh check/list` 尚未集成这个计数。

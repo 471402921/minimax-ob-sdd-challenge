@@ -35,8 +35,13 @@ Each check:
 
 `recommendation`: `pass`, `fail`, `review`, or `error`. `pass` requires every check
 status to be `verified`, but does NOT imply approval for platform submission. This
-is only a pilot report-consistency rule; the actual official rubric must be frozen
-separately. `failed` requires an actual observed violation, not missing execution.
+is only a legacy pilot report-consistency rule; it is stricter than the current
+human working rubric (which does NOT make MiniMax records a standalone gate).
+Until the validator and schema are migrated together, use `review` when evidence
+is incomplete and explain the passing behavior; the human owner may independently
+approve pass. Do not invent `verified` evidence just to satisfy this rule.
+The official rubric must be confirmed separately. `failed` requires an actual
+observed violation, not missing execution.
 
 `environment_adjustments`: array of strings explaining every deviation from the
 submitted run instructions. If source repairs are needed, do not count repaired

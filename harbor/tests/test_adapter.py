@@ -39,6 +39,14 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn('curl', cmd)
         self.assertNotIn('npm install', cmd)
 
+    def test_bootstrap_failure_is_not_silently_accepted(self):
+        obj = self.load()
+        async def failed(*args, **kwargs):
+            return types.SimpleNamespace(return_code=1)
+        obj.exec_as_agent = failed
+        with self.assertRaises(RuntimeError):
+            asyncio.run(obj.install(object()))
+
     def test_version_mismatch_and_mcp_are_rejected(self):
         obj = self.load()
         obj._version = 'latest'

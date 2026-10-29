@@ -372,6 +372,35 @@ def cmd_submit(args: argparse.Namespace) -> int:
 
     client = _client_from_env(args, workdir)
 
+    confirmed_unavailable = bool(getattr(args, "confirmed_repo_unavailable", False))
+    if confirmed_unavailable:
+        # Explicit operator confirmation, never infer a zero from a network error.
+        if (args.verdict != "fail" or pending.get("stage") != "fetch_failed"
+                or pending.get("fetch_fail_msg") != 4 or not (args.reason or "").strip()
+                or not task.branch or not task.commit_id
+                or pending.get("branch_requested") != task.branch
+                or pending.get("commit_requested") != task.commit_id):
+            print("拒绝：仓库不可访问例外仅允许已核实的fetch_failed/4、fail、非空理由及一致的指定版本。", file=sys.stderr)
+            return 5
+        sub_ids = [s.sub_question_id for s in task.sub_questions]
+        try:
+            response = client.report_success(
+                task, branch=task.branch, commit_id=task.commit_id,
+                verdicts={sid: False for sid in sub_ids},
+                messages={sid: args.reason.strip()[:480] for sid in sub_ids},
+            )
+            _require_ack(response, task_id)
+        except (OBProtocolError, OBRemoteError) as exc:
+            _log(runlog, "review_submit_rejected", task_id=task_id, verdict="fail", error=str(exc))
+            print("零分回传未获明确确认；保留pending与凭据，核对平台状态后再处理。", file=sys.stderr)
+            return 7
+        _finish(workdir, runlog, pending, verdict="fail", reason=args.reason.strip(),
+                extra={"branch": task.branch, "commit_id": task.commit_id,
+                       "sub_questions": sub_ids, "confirmed_repo_unavailable": True,
+                       "version_source": "platform_requested_not_checked_out"})
+        print(f"已回传 taskId={task_id} 不通过/0分（已核实仓库不可访问，未执行代码测试）")
+        return 0
+
     # ── 错误回传：clone/评测无法完成 ──
     if args.verdict == "error":
         fail_msg = args.fail_msg if args.fail_msg is not None else FAIL_OTHER
@@ -531,6 +560,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reason", default="", help="判定理由（pass/fail 必填，写入平台子题 message）")
     s.add_argument("--fail-msg", type=int, default=None,
                    help="仅 --verdict error 用：1 branch 缺失/2 commit 缺失/4 clone 失败/100 其他")
+    s.add_argument("--confirmed-repo-unavailable", action="store_true",
+                   help="人工已核实仓库不可访问；仅fetch_failed/4且fail可按0分回传，不伪造检出")
     s.add_argument("--allow-expired", action="store_true",
                    help="显式尝试回传已过期任务（危险：平台可能已重新分配；默认拒绝）")
     s.set_defaults(func=cmd_submit)

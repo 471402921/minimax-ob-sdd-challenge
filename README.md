@@ -12,11 +12,15 @@
 - **接续工作先读：[当前状态与待办](docs/当前状态.md)**。
 - **配置凭据、查询积压、人工审阅：[运行手册](docs/运行手册.md)**。
 - **Harbor + Pi：[试点说明](harbor/README.md) / [实际验证记录](harbor/VALIDATION.md)**。
-- **新版平台 skill：[说明](skills/techcamp-platform-integration/SKILL.md) / [来源版本](skills/techcamp-platform-integration/SOURCE.md)**。
+- **评分口径：[相对评分标准](docs/相对评分标准.md)**。
+- **资源与后台执行：[批量评测运行器](docs/批量评测运行器.md) / [并发方案](docs/Harbor并发评测方案.md)**。
+- **Agent操作边界：[AGENTS.md](AGENTS.md)**。
+- 平台集成skill仅在已授权的本机 `skills/techcamp-platform-integration/` 提供，已忽略、不随公开clone发布。
 
 只读队列计数接口现已可用：`queryTaskQueueCount` 返回 `waitCount/runCount`，不需要领取任务。
 最近查询快照见当前状态页，实时数量必须重新查询。`review.sh list` 只列本地任务，不能代替平台计数。
-Harbor 已完成合成负例模型审阅；**报告校验 reward=1 不代表选手通过**，目前没有生产自动回传。
+Harbor 已完成真实审阅与独立后端补验、2/4路合成批处理验证；预热镜像和单任务后台服务已接入。
+**报告校验 reward=1 不代表选手通过**，真实4路容量尚未验证，没有自动领取或自动回传。
 
 本仓库是 **PUBLIC**：凭据、选手源码、日志留在仓库外或已忽略目录；私有来源 skill 的
 公开再分发许可尚待确认。当前保存于本地不等于可以推送公开。

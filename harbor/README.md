@@ -3,7 +3,7 @@
 **用途：复现人工审阅，不是让 Agent 替选手完成作业。**
 
 跨模块当前状态与凭据加载统一见 [当前状态](../docs/当前状态.md) / [运行手册](../docs/运行手册.md)。
-平台只读计数已可用，但本目录未接队列调度或自动回传。
+平台只读计数已可用；`batch.py` 已提供对**已领取且已固定快照**的资源受控批运行，仍不接队列领取或自动回传。完整方案见 [批量评测运行器](../docs/批量评测运行器.md)。
 
 已核实 Harbor **0.25.0** 内置 `pi` Agent（支持版本固定、模型端点覆盖、session/trajectory
 和用量记录）。`pi_preinstalled.py` 仅覆写安装步骤：镜像预装 Node **22.23.2** / Pi **1.4.0**，
@@ -19,6 +19,9 @@
   文件模式和每个文件 SHA-256 写入 manifest；实际快照保留可执行位。
 - `reviewer-skill/`：复用本次人工复核流程，明确区分实际复跑、静态检查和选手原始记录。
 - `run_pilot.py`：专用 key 必填，空白 HOME，环境变量白名单；不继承平台/PAT/云密钥/宿主 Pi 配置。
+- `batch.py`：默认只打印计划；`--execute` 才运行，硬上限4个trial/2个backend槽，检查资源、租约、固定快照、任务锁，按进程组监督并保存状态；无自动重试、claim或callback。
+- `resources.py`：只读主机可用内存、磁盘、PSI、CPU和swap计数，核心信号缺失时fail-closed。
+- `prewarm.py` + `images/`：离线依赖、seekdb预检和PowerContext服务预热；基础镜像使用本地不可变sha256 ID，选手快照只在运行时注入。
 - `template/`：Agent 可联网，非 root、无 sudo、无宿主 Docker socket；固定提交在只读
   `/submission/minimax`，可在 `/work/review` 复制后运行；输出到 `/output`。
 - 独立 verifier：无需模型，不执行学生代码，只核对报告身份、结构、证据文件哈希。
@@ -26,16 +29,21 @@
   `network_mode: none` 断网，已实查容器 NetworkMode=none；task.toml 标 public 以避开
   不支持的 Harbor 动态策略。这是 **Docker 专用**实现，切换 provider 前须重新验证。
 - **`reward=1` 只代表报告协议校验通过，不代表选手通过。** 真实失败报告也可以 reward=1。
-  此版本不足以自动判分：Agent 写出的证据可被伪造，后续需要可信执行记录与独立复跑。
+  `batch.py`同样不把reward翻译成选手结论，后续仍需可信执行记录与独立复跑。
 - `oracle` 只测试报告传递；不是实际作品全流程重放。真实 Pi 已使用独立 M Plan key
-  对空的合成样例完成审阅，未判通过。尚未在 Harbor 内完成真实数据库作品复核。
+  对空的合成样例完成审阅，未判通过。task47213747已在Harbor外独立补验真实seekdb/PowerContext，详见当前状态。
 
 本仓库公开，学生源码/运行日志不得放在可提交目录或上传 Harbor Hub。任务只生成到
 已忽略的 `workdir/harbor/`，结果只放 `runs/harbor/`。不要执行 `harbor upload/publish`。
 
 ## 当前验证状态
 
-- 24 项离线回归通过；既有 judge 回归 185 项通过、0 FAIL、0 skip；Harbor lint 无问题。
+- 批处理运行器已实际完成2路和4路合成 oracle 批次；4路批次4/4 finished，资源采样期间最低 MemAvailable约35.28GiB；无模型调用、无平台操作。
+- 预热镜像 `harbor/prewarm:local` 已构建并通过健康检查：Pi1.4.0、seekdb `1.4.0.post2` 预检、PowerContext ready/scope/0600服务描述均通过。服务版本和依赖替换仍须在报告中披露。
+- Harbor离线测试现为143项通过；新增资源、批处理、预热和服务启动失败保护测试。
+
+- 既有 Harbor 试点离线回归和新增批处理/预热测试通过；既有 judge 回归185项通过、0 FAIL、0 skip；Harbor lint 无问题。
+- 预热健康检查在本机需要通过一个仅用于sudo docker CLI的shim执行；`prewarm.py`本身不自动sudo，生产worker应给运行用户Docker权限。
 - 用 `--print-config` 核对了单个 Pi Agent、明确 model、Pi 1.4.0 和专用 key 变量名。
   Harbor 0.25.0 的 `--model` 必须配 `--agent` 才会覆盖配置；wrapper 已处理。
 - 无专用 key 时 wrapper 退出码 2，未启动 Harbor，也未使用宿主 Pi 认证。
@@ -47,7 +55,7 @@
   首次空样例过度探测，已收紧提示并禁止 env/printenv/凭据探测。
 - `pi-lean-20261028-150753`：再次实际运行通过，六项 not_run、recommendation=review、
   8 个证据文件。Agent 阶段约170秒；仍需优化成本。详细用量、限制见 [VALIDATION.md](VALIDATION.md)。
-- 尚未完成真实后端复核、正反例校准或并发容量测试；不能用于自动给分。
+- 尚未完成真实模型4路峰值、正反例校准或自动队列调度；不能用于自动给分。合成4路只验证容器生命周期和调度护栏。
 
 ## 本地检查（不领任务、不调用模型）
 

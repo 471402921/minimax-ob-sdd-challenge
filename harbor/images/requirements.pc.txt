@@ -1,0 +1,40 @@
+# Offline dependency set for the PowerContext service venv (/opt/pc-venv).
+#
+# This is the exact requirement list that was resolved offline against
+# workdir/pc-47213508/wheels and used to start a real PowerContext Server in the
+# task-47213747 supplement run. It is installed with:
+#
+#   pip install --no-index --find-links /wheels/pc -r /requirements.pc.txt
+#
+# so no package index is ever contacted. Version bounds are the upstream bounds of
+# the PowerContext [server]/[cli]/[builtin] extras; the wheel cache holds one
+# matching wheel per requirement.
+aiosqlite>=0.22,<1
+apscheduler>=3.11,<4
+fastapi>=0.115,<1
+fastmcp>=3.4,<4
+httpx>=0.28,<1
+inquirerpy>=0.3,<1
+jinja2>=3.1.6,<4
+jsonschema>=4.23,<5
+markdown-it-py>=4,<5
+opentelemetry-api>=1.30,<2
+opentelemetry-sdk>=1.30,<2
+packaging>=24,<27
+platformdirs>=4,<5
+prometheus-client>=0.21,<1
+pycasbin>=2.8,<3
+pydantic-ai-slim[anthropic,openai]>=2.27.1,<3
+pydantic-settings>=2.7,<3
+pydantic>=2.10,<3
+pylibseekdb>=1.4.0.post1,<2; sys_platform == 'linux' or sys_platform == 'darwin'
+pymysql>=1.1,<2
+pyobvector>=0.2.28,<0.3
+pyyaml>=6,<7
+rfc8785>=0.1.4,<1
+scalar-fastapi>=1.8.2,<2
+sqlalchemy[asyncio]>=2,<3
+sqlite-vec>=0.1.9,<0.2
+typer>=0.16,<1
+typing-extensions>=4.12,<5
+uvicorn>=0.34,<1

@@ -22,6 +22,16 @@ report-validator reward with a competition score.
 2. Copy the snapshot into `/work/review`. Keep originals immutable. Record runtime
    versions, dependency versions and environment changes. Never silently repair
    contestant code to obtain a pass. Do not fetch a newer contestant commit.
+   Preserve supplied records before scratch scripts overwrite them. Write an initial
+   schema-valid report after inventory, then checkpoint it; reserve the final five
+   minutes for evidence hashes and final output. Bound each install/download to
+   180 seconds, pip timeout 20 and at most one retry. Prefer provisioned offline
+   wheels; do not repeatedly retry failed downloads until the entire trial expires.
+   If `/input/runtime-profile.json` enables services, the trusted launcher supplies
+   a trial-local PowerContext endpoint/scope/token via environment. Use them through
+   the submitted client; NEVER print them or read `/tmp/review-services.json`.
+   `/opt/wheels/seekdb` is a compatibility cache, not permission to claim the
+   contestant's original dependency pins installed successfully.
 3. Run the documented baseline/target/regression checks. Capture each command,
    working directory, exit code, stdout/stderr and passed/failed/skipped counts.
    Preserve full logs under `/output/evidence/`; a pipeline's final command must
@@ -31,12 +41,16 @@ report-validator reward with a competition score.
    - runtime: initialize and run the declared example from clean state;
    - minimax: inspect submitted model records and their relationship to the diff;
      this is supplied-record inspection, NOT proof that you reran that model;
+     absence of model records alone is NOT a fail gate; never call the submitted
+     live model client using evaluator credentials;
    - context: inspect source citations and exercise specification reimport if the
      submitted example includes it; confirm current content, not stale content;
    - database: use a real seekdb/OceanBase backend and show that its query results
      enter context; distinguish mock tests from live-backend evidence;
    - state: save a unique task state, exit the process, recover it in a new process
-     through PowerContext, and demonstrate its use; mere presence is insufficient;
+     through PowerContext, and demonstrate its use; remove the SCRATCH local mirror
+     before the second process to rule out fallback, and run a bad-scope negative
+     control. Do not count a zero CLI exit as proof of persistence;
    - code_change: apply the submitted diff to its supplied baseline in scratch,
      run the SAME target tests before/after and original regressions unchanged.
 5. If a dependency cannot run without Docker, do not mount a host Docker socket or

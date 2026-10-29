@@ -1,4 +1,28 @@
-# Harbor pilot validation — 2026-10-28
+# Harbor validation log — 2026-10-28 / 2026-10-29
+
+## 2026-10-29 update
+
+- Real-submission Harbor review completed in approximately 16m25s with report_valid=1,
+  recommendation=review. Operator follow-up independently verified live seekdb and
+  PowerContext; backend checks were separate runs, not one combined end-to-end run.
+- Dependency pin failures, slow downloads, verify.sh swallowing failures, and local
+  state fallback demonstrated why schema-valid reports and exit0 do not prove success.
+- Prewarm image builds and health checks pass: Pi1.4.0, offline seekdb1.4.0.post2
+  open/close, real PowerContext readiness and server-assigned scope, private service
+  description. The underlying image build used version tags, not fully pinned digests.
+- Base-image task build and adapter bootstrap integration passed. BuildKit cannot
+  use a bare local sha256 ID as FROM here; use a content-named local tag and verify
+  its ID before launch. Dependency replacement remains an explicit experiment.
+- Batch supervisor completed both 2-task and 4-task synthetic oracle runs. Four-task
+  run: 4/4 finished; minimum sampled host MemAvailable approximately35.28GiB.
+  These are lightweight transport checks, NOT real-model/backend capacity proof.
+- Offline baseline: 143 Harbor tests, 185 judge assertions, 9 recovery tests and
+  3 confirmed-inaccessible tests passed; generated-task lint and shell syntax pass.
+- User-systemd single-task launcher now separates chat latency from the40-minute
+  wall limit. Current real single-task run is not assigned a result by this document.
+- No automatic platform claim/callback. No private artifacts uploaded or committed.
+
+## Historical 2026-10-28 pilot record
 
 Operational updates: [current state](../docs/当前状态.md) / [runbook](../docs/运行手册.md).
 
@@ -67,17 +91,19 @@ It is still expensive for the amount of work; optimize before scaling.
 - Dedicated key exact-byte scan across 237 local pilot/source/log files: 0 matches.
   This is not proof against encoded exfiltration or malicious future submissions.
 - Host Pi auth/config was not mounted. Platform token and PAT were not forwarded.
-- New Harbor code and private output directories remain uncommitted; no upload.
+- At this historical checkpoint, Harbor code was uncommitted. Public code was later
+  committed; private output directories remain ignored and must not be uploaded.
 
 ## Remaining gates
 
-- Concurrency is intentionally unvalidated. Keep `n_concurrent_trials=1` until dependency images,
-  PowerContext/seekdb service isolation, timeout budgets and M Plan rate limits are measured. See
-  `docs/Harbor并发评测方案.md`.
+- Real workload concurrency is unvalidated. Current single-task service uses1;
+  batch caps are4 total/2 backend, with each child Harbor forced to1. See
+  [capacity plan](../docs/Harbor并发评测方案.md) and [runner](../docs/批量评测运行器.md).
 - The official M Plan documentation exposes RPM/TPM and 5-hour/weekly windows, not a fixed concurrency
   number. Do not infer a single-key concurrency limit from the Go/Explore/Build tier name.
 
-- Real-submission review with live seekdb/PowerContext backends (trial-local only).
+- Repeatable prewarmed real-submission reviews with live seekdb/PowerContext
+  (individual operator follow-up has passed; automated4-way capacity has not).
 - Positive, negative, stale-spec, fake-log, skipped-test and prompt-injection cases.
 - Prevent reviewer code execution from accessing model master credentials; prefer
   per-trial short-lived gateway keys or an external model loop.
