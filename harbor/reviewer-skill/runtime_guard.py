@@ -46,10 +46,14 @@ def sample(cgroup: Path):
 
 
 def monitor(output: Path, duration: int):
+    # Metrics must NOT live under /output/evidence: the file grows while the
+    # reviewer hashes it, so a live metrics file there breaks the evidence-hash
+    # verifier even when the report is honest.
+    metrics = Path('/tmp/review-runtime-resources.jsonl')
     end = time.monotonic() + duration
     while time.monotonic() < end:
         record = sample(Path('/sys/fs/cgroup'))
-        with (output / 'evidence/runtime-resources.jsonl').open('a') as f:
+        with metrics.open('a') as f:
             f.write(json.dumps(record) + '\n')
         # Emit one line per sample: a caller that pipes us into `head` must see
         # output (and get SIGPIPE) instead of blocking for the whole duration.
