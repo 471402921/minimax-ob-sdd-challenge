@@ -28,6 +28,7 @@ MAX_WHEELS, MAX_WHEEL_BYTES, MAX_METADATA_BYTES = 2000, 64 << 20, 256 << 10
 PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[A-Za-z0-9,._ -]*\])?\s*==\s*([A-Za-z0-9][A-Za-z0-9.+!-]*)$")
 SPEC = re.compile(r"^(===|==|!=|<=|>=|~=|<|>)\s*([0-9][0-9A-Za-z.*]*)$")
 RANGE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[A-Za-z0-9,._ -]*\])?\s*((?:(?:===|==|!=|<=|>=|~=|<|>)\s*[0-9][0-9A-Za-z.*]*\s*,?\s*)+)$")
+BARE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[A-Za-z0-9,._ -]*\])?$")
 RANGE_PART = re.compile(r"(===|==|!=|<=|>=|~=|<|>)\s*([0-9][0-9A-Za-z.*]*)")
 METADATA_MEMBER = re.compile(r"^[^/]+\.dist-info/METADATA$")
 SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache"}
@@ -126,19 +127,103 @@ def _unknown_reason(line: str) -> str:
 def _parse_pyproject(text: str) -> tuple[list[str] | None, str]:
     """Runtime requirements of a pyproject.toml, or None when it stays unparsed.
 
-    ``tomllib`` only exists from Python 3.11; on 3.10 the file is reported as
-    needing a manual decision instead of being guessed at.
+    ``tomllib`` only exists from Python 3.11. On 3.10 a bounded fallback reads
+    only the ``[project].dependencies`` string array, so an audit on an older
+    host does not silently turn every pyproject into an unparsed blocker.
     """
     try:
         import tomllib
     except ModuleNotFoundError:
-        return None, "pyproject.toml not parsed: tomllib requires Python 3.11+; manual determination required"
+        return _parse_project_dependencies_fallback(text)
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
         return None, "pyproject.toml not parsed: invalid TOML; manual determination required"
     declared = (data.get("project") or {}).get("dependencies") or []
     return [str(item) for item in declared if isinstance(item, str)], ""
+
+
+def _parse_project_dependencies_fallback(text: str) -> tuple[list[str] | None, str]:
+    """Bounded read of [project].dependencies when tomllib is unavailable.
+
+    A single quote-aware scanner finds the array bounds, so a nested ``[...]``
+    inside an element (``powercontext[builtin]>=1.4.0``) is not mistaken for the
+    end of the array and environment markers keep their quotes.
+    """
+    section = text.split("[project]", 1)
+    if len(section) != 2:
+        return None, "pyproject.toml not parsed: no [project] table; manual determination required"
+    body = section[1].split("\n[", 1)[0]
+    match = re.search(r"(?m)^\s*dependencies\s*=\s*\[", body)
+    if not match:
+        return [], "no [project].dependencies declared"
+    index = match.end()
+    depth = 1
+    quote = None
+    escaped = False
+    chunks: list[str] = []
+    while index < len(body) and depth:
+        char = body[index]
+        if quote:
+            chunks.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+            chunks.append(char)
+        elif char == "[":
+            depth += 1
+            chunks.append(char)
+        elif char == "]":
+            depth -= 1
+            if depth:
+                chunks.append(char)
+        else:
+            chunks.append(char)
+        index += 1
+    if depth:
+        return None, "pyproject.toml not parsed: unterminated dependencies array; manual determination required"
+    elements: list[str] = []
+    current = ""
+    quote = None
+    escaped = False
+    for char in "".join(chunks):
+        if quote:
+            current += char
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+            current += char
+            continue
+        if char == ",":
+            elements.append(current)
+            current = ""
+            continue
+        current += char
+    if current.strip():
+        elements.append(current)
+    cleaned = []
+    for element in elements:
+        value = element.strip()
+        if not value:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        cleaned.append(value)
+    if not cleaned:
+        return [], "no [project].dependencies declared"
+    return cleaned, ("pyproject.toml parsed by the bounded fallback (tomllib absent); "
+                     "only [project].dependencies is read")
 
 
 def _collect_declarations(root: Path) -> list[tuple[str, str | None, str]]:
@@ -220,15 +305,117 @@ def _build_cache(wheel_dirs: list[Path]) -> dict[str, list[tuple[str, str | None
     return cache
 
 
+MARKER_ENV = {"sys_platform": "linux", "platform_system": "Linux", "os_name": "posix",
+              "python_version": "3.11", "python_full_version": "3.11.15",
+              "platform_machine": "x86_64", "implementation_name": "cpython"}
+
+
+def _marker_applies(marker: str, env: dict[str, str] | None = None) -> bool | None:
+    """Evaluate a simple environment marker; None means "cannot decide".
+
+    Only boolean logic, comparisons against constants and the whitelisted
+    variables above are accepted. Anything else (version specifiers via
+    ``in`` on an unknown list, callables, unknown names) is undecidable and the
+    caller keeps the requirement blocking instead of guessing.
+    """
+    import ast
+
+    values = dict(MARKER_ENV)
+    if env:
+        values.update(env)
+    try:
+        tree = ast.parse(marker.strip(), mode="eval")
+    except SyntaxError:
+        return None
+
+    def evaluate(node):
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body)
+        if isinstance(node, ast.BoolOp):
+            results = [evaluate(value) for value in node.values]
+            if isinstance(node.op, ast.And):
+                if any(value is False for value in results):
+                    return False
+                return True if all(value is True for value in results) else None
+            if any(value is True for value in results):
+                return True
+            return False if all(value is False for value in results) else None
+        if isinstance(node, ast.Compare):
+            left = evaluate(node.left)
+            if left is None:
+                return None
+            result = True
+            for op, comparator in zip(node.ops, node.comparators):
+                right = evaluate(comparator)
+                if right is None:
+                    return None
+                if isinstance(op, ast.Eq):
+                    ok = left == right
+                elif isinstance(op, ast.NotEq):
+                    ok = left != right
+                elif isinstance(op, ast.In):
+                    ok = left in right
+                elif isinstance(op, ast.NotIn):
+                    ok = left not in right
+                elif isinstance(op, (ast.Gt, ast.GtE, ast.Lt, ast.LtE)):
+                    # Only plain dotted-numeric versions; anything else stays undecidable.
+                    if not (re.fullmatch(r"\d+(\.\d+)*", str(left))
+                            and re.fullmatch(r"\d+(\.\d+)*", str(right))):
+                        return None
+                    first, second = _version_tuple(str(left)), _version_tuple(str(right))
+                    ok = {ast.Gt: first > second, ast.GtE: first >= second,
+                          ast.Lt: first < second, ast.LtE: first <= second}[type(op)]
+                else:
+                    return None
+                if not ok:
+                    return False
+                result = result and ok
+                left = right
+            return result
+        if isinstance(node, ast.Name):
+            return values.get(node.id)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    return evaluate(tree)
+
+
+def _split_marker(requirement: str) -> tuple[str, str | None]:
+    """Split ``name[extras]spec; marker`` on the first top-level semicolon."""
+    quote = None
+    for index, char in enumerate(requirement):
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+            continue
+        if char == ";":
+            return requirement[:index].strip(), requirement[index + 1:].strip()
+    return requirement.strip(), None
+
+
 def _classify(source: str, requirement: str | None, note: str, cache: dict) -> dict:
     """Match one declared requirement against the wheel cache."""
     record = {"file": source, "requirement": requirement, "name": None, "version": None,
               "status": "unknown", "reason": ""}
     if requirement is None:
         # An unparsed pyproject is reported, not silently treated as satisfied.
-        record["status"] = "skipped" if "tomllib" in (note or "") else "unknown"
+        record["status"] = "skipped" if note else "unknown"
         record["reason"] = note or "not parsed; manual determination required"
         return record
+    requirement, marker = _split_marker(requirement)
+    if marker:
+        applies = _marker_applies(marker)
+        if applies is False:
+            record["status"] = "skipped"
+            record["reason"] = "environment marker does not apply to this trial"
+            return record
+        if applies is None:
+            record["reason"] = "environment marker could not be evaluated"
+            return record
     single = PIN.match(requirement)
     if single:
         record["name"] = _canonical(single.group(1))
@@ -249,6 +436,21 @@ def _classify(source: str, requirement: str | None, note: str, cache: dict) -> d
             return record
         record["status"] = "version_mismatch"
         record["reason"] = "cached wheel version differs from the declared pin"
+        return record
+    bare = BARE.match(requirement)
+    if bare and not PIN.match(requirement):
+        # No version specifier at all: pip would install whatever is newest.
+        # A single cached distribution is enough to avoid a download, but the
+        # absence of a pin is recorded rather than presented as reproducible.
+        record["name"] = _canonical(bare.group(1))
+        available = cache.get(record["name"], [])
+        if not available:
+            record["status"] = "missing"
+            record["reason"] = "unpinned dependency with no cached wheel"
+            return record
+        record["version"] = available[0][0]
+        record["status"] = "cached"
+        record["reason"] = "unpinned dependency; a cached version exists"
         return record
     ranged = RANGE.match(requirement)
     if ranged:

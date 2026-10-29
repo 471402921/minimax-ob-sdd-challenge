@@ -26,6 +26,11 @@ fi
 MANIFEST="$(realpath -- "$1")"
 BATCH="$2"
 WHEELS="${WHEELS:-$ROOT/workdir/wheelhouse-pc140}"
+TRIALS="${TRIALS:-1}"
+BACKENDS="${BACKENDS:-1}"
+if [[ ! "$TRIALS" =~ ^[1-4]$ || ! "$BACKENDS" =~ ^[1-2]$ ]]; then
+  echo 'TRIALS must be 1..4 and BACKENDS 1..2' >&2; exit 2
+fi
 EXTRA=()
 # Cold installs can exceed the 10-minute target, so they must be deliberate.
 if [[ "${ALLOW_UNCACHED:-0}" == "1" ]]; then EXTRA+=(--allow-uncached); fi
@@ -33,15 +38,15 @@ cd "$ROOT"
 # Read-only plan includes dependency audit, lease and resource checks; no secret
 # or platform operation. The audit is what stops a 12-minute cold pip install.
 python3 -B harbor/batch.py --manifest "$MANIFEST" --batch-id "$BATCH" \
-  --trials 1 --backends 1 --timeout 2400 --wheels "$WHEELS" "${EXTRA[@]}"
+  --trials "$TRIALS" --backends "$BACKENDS" --timeout 2400 --wheels "$WHEELS" "${EXTRA[@]}"
 EXTRA_SYSTEMD=()
 if [[ "${HARBOR_BATCH_TRACE:-0}" == "1" ]]; then EXTRA_SYSTEMD+=(--setenv=HARBOR_BATCH_TRACE=1); fi
 systemd-run --user --unit="harbor-$BATCH" \
   --property=WorkingDirectory="$ROOT" --property=KillMode=control-group \
-  --property=TimeoutStopSec=45 --property=RuntimeMaxSec=2520 \
+  --property=TimeoutStopSec=45 --property=RuntimeMaxSec=4200 \
   "${EXTRA_SYSTEMD[@]}" \
   /bin/bash "$ROOT/harbor/start_service.sh" --entry \
-  --manifest "$MANIFEST" --batch-id "$BATCH" --trials 1 --backends 1 --timeout 2400 \
-  --wheels "$WHEELS" "${EXTRA[@]}" --execute
+  --manifest "$MANIFEST" --batch-id "$BATCH" --trials "$TRIALS" --backends "$BACKENDS" \
+  --timeout 2400 --wheels "$WHEELS" "${EXTRA[@]}" --execute
 printf 'Started service harbor-%s. No auto-callback.\n' "$BATCH"
 printf 'Status: systemctl --user status harbor-%s --no-pager\n' "$BATCH"

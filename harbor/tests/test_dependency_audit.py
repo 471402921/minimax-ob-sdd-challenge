@@ -99,6 +99,23 @@ class DependencyAuditTests(unittest.TestCase):
         self.requirements("numpy==1.26.4\n")
         self.assertEqual(self.audit()["declared"][0]["status"], "unsupported")
 
+    def test_platform_markers_are_evaluated_not_guessed(self):
+        self.requirements("numpy==1.26.4; sys_platform == 'linux'\n"
+                          "numpy==1.26.4; sys_platform == 'win32'\n"
+                          "numpy==1.26.4; python_version >= '3.8' and os_name == 'posix'\n")
+        make_wheel(self.wheels, "numpy", "1.26.4")
+        result = self.audit()
+        self.assertEqual([item["status"] for item in result["declared"]],
+                         ["cached", "skipped", "cached"])
+        self.assertTrue(result["all_pins_cached"])
+
+    def test_unevaluable_marker_stays_blocking(self):
+        self.requirements("numpy==1.26.4; platform_release.startswith('5')\n")
+        make_wheel(self.wheels, "numpy", "1.26.4")
+        result = self.audit()
+        self.assertEqual(result["declared"][0]["status"], "unknown")
+        self.assertFalse(result["all_pins_cached"])
+
     def test_markers_ranges_and_extras_are_classified(self):
         self.requirements('torch==2.0.0; python_version < "3.12"\n'
                           "requests>=2.0\n"
@@ -108,9 +125,9 @@ class DependencyAuditTests(unittest.TestCase):
         # Markers and include directives stay undecided; extras select the same
         # distribution, and an unresolvable range is reported as missing.
         self.assertEqual([item["status"] for item in result["declared"]],
-                         ["unknown", "missing", "missing", "unknown"])
+                         ["missing", "missing", "missing", "unknown"])
         reasons = " ".join(item["reason"] for item in result["declared"])
-        self.assertIn("marker", reasons)
+        self.assertIn("option or include", reasons)
         self.assertNotIn("extras not resolved", reasons)
         self.assertFalse(result["all_pins_cached"])
 
@@ -145,10 +162,10 @@ class DependencyAuditTests(unittest.TestCase):
             self.assertEqual(result["declared"][0]["status"], "cached")
             self.assertTrue(result["all_pins_cached"])
         else:
-            self.assertEqual(result["declared"][0]["status"], "skipped")
-            self.assertIn("tomllib", result["declared"][0]["reason"])
-            # Nothing was actually decided, so this must not look ready.
-            self.assertFalse(result["all_pins_cached"])
+            # Python 3.10 has no tomllib; the bounded fallback still reads
+            # [project].dependencies, so the pin is matched instead of skipped.
+            self.assertEqual(result["declared"][0]["status"], "cached")
+            self.assertTrue(result["all_pins_cached"])
 
     def test_setup_py_is_never_executed(self):
         (self.submission / "setup.py").write_text("raise SystemExit('must not run')\n", encoding="utf-8")
@@ -210,7 +227,7 @@ class DependencyAuditTests(unittest.TestCase):
         self.assertEqual(json.loads(buffer.getvalue())["summary"]["missing"], 1)
 
     def test_cli_exits_two_for_unknown_requirements(self):
-        self.requirements('requests>=2.0; python_version < "3.12"\n')
+        self.requirements("requests>=2.0; platform_release.startswith('5')\n")
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             code = audit_module.main(["--submission", str(self.task), "--wheels", str(self.wheels)])

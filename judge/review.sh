@@ -12,7 +12,7 @@
 #
 # 用法：
 #     judge/review.sh check                      预检 + 平台探测（保证不领取任务）
-#     judge/review.sh fetch [--minutes N] [--yes]  领取 1 条 → 拉取 → 采证（不回传）
+#     judge/review.sh fetch [--minutes N] [--yes] [--allow-multiple]  领取 1 条 → 拉取 → 采证（不回传）
 #     judge/review.sh list                       查看悬着的任务与剩余时间
 #     judge/review.sh submit <taskId> <pass|fail|error> [--reason 理由] [--fail-msg N] [--yes]
 #
@@ -47,7 +47,7 @@ usage() {
 用法：
   judge/review.sh check
       预检 + 平台探测。用无交集的 questionId 探测，保证不领取任何任务。
-  judge/review.sh fetch [--minutes N] [--yes]
+  judge/review.sh fetch [--minutes N] [--yes] [--allow-multiple]
       领取 1 条任务 → 拉取 → 采证，保留检出供人工审阅，不回传。
       --minutes N  平台超时分钟数（默认 60，范围 1~240）
   judge/review.sh list
@@ -205,13 +205,14 @@ cmd_list() {
 }
 
 cmd_fetch() {
-  local minutes="$DEFAULT_MINUTES" yes=0
+  local minutes="$DEFAULT_MINUTES" yes=0 allow_multiple=0
   while (($# > 0)); do
     case "$1" in
       --minutes)
         [[ $# -ge 2 ]] || die "--minutes 需要一个数值"
         minutes="$2"; shift 2 ;;
       --yes|-y) yes=1; shift ;;
+      --allow-multiple) allow_multiple=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "未知参数：$1（见 judge/review.sh --help）" ;;
     esac
@@ -249,8 +250,10 @@ cmd_fetch() {
   confirm "yes" "确认现在领取？输入 yes 继续：" "$yes"
 
   local rc=0
+  local allow_args=()
+  ((allow_multiple)) && allow_args+=(--allow-multiple)
   "$PY" "$REVIEW_PY" --workdir "$WORKDIR" --question-id "$QUESTION_ID" \
-        --timeout-minutes "$minutes" fetch || rc=$?
+        --timeout-minutes "$minutes" fetch "${allow_args[@]}" || rc=$?
 
   if ((rc != 0)); then
     say "" >&2
