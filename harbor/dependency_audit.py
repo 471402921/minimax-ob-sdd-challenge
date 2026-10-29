@@ -25,8 +25,10 @@ from pathlib import Path
 
 MAX_FILES, MAX_TOTAL_BYTES, MAX_FILE_BYTES = 2000, 4 << 20, 256 << 10
 MAX_WHEELS, MAX_WHEEL_BYTES, MAX_METADATA_BYTES = 2000, 64 << 20, 256 << 10
-PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([A-Za-z0-9][A-Za-z0-9.+!-]*)$")
+PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[A-Za-z0-9,._ -]*\])?\s*==\s*([A-Za-z0-9][A-Za-z0-9.+!-]*)$")
 SPEC = re.compile(r"^(===|==|!=|<=|>=|~=|<|>)\s*([0-9][0-9A-Za-z.*]*)$")
+RANGE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[A-Za-z0-9,._ -]*\])?\s*((?:(?:===|==|!=|<=|>=|~=|<|>)\s*[0-9][0-9A-Za-z.*]*\s*,?\s*)+)$")
+RANGE_PART = re.compile(r"(===|==|!=|<=|>=|~=|<|>)\s*([0-9][0-9A-Za-z.*]*)")
 METADATA_MEMBER = re.compile(r"^[^/]+\.dist-info/METADATA$")
 SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache"}
 RUNNING_PYTHON = ".".join(str(part) for part in sys.version_info[:3])
@@ -223,44 +225,84 @@ def _classify(source: str, requirement: str | None, note: str, cache: dict) -> d
     record = {"file": source, "requirement": requirement, "name": None, "version": None,
               "status": "unknown", "reason": ""}
     if requirement is None:
+        # An unparsed pyproject is reported, not silently treated as satisfied.
+        record["status"] = "skipped" if "tomllib" in (note or "") else "unknown"
         record["reason"] = note or "not parsed; manual determination required"
         return record
-    match = PIN.match(requirement)
-    if not match:
-        record["reason"] = _unknown_reason(requirement)
+    single = PIN.match(requirement)
+    if single:
+        record["name"] = _canonical(single.group(1))
+        record["version"] = single.group(2)
+        available = cache.get(record["name"], [])
+        if not available:
+            record["status"] = "missing"
+            record["reason"] = "no wheel for this project in the given wheel directories"
+            return record
+        for wheel_version, requires_python in available:
+            if wheel_version != record["version"]:
+                continue
+            if not _requires_python_ok(requires_python, RUNNING_PYTHON):
+                record["status"] = "unsupported"
+                record["reason"] = "cached wheel Requires-Python is not satisfied by the running interpreter"
+            else:
+                record["status"] = "cached"
+            return record
+        record["status"] = "version_mismatch"
+        record["reason"] = "cached wheel version differs from the declared pin"
         return record
-    record["name"] = _canonical(match.group(1))
-    record["version"] = match.group(2)
-    available = cache.get(record["name"], [])
-    if not available:
-        record["status"] = "missing"
-        record["reason"] = "no wheel for this project in the given wheel directories"
+    ranged = RANGE.match(requirement)
+    if ranged:
+        # Extras select the SAME distribution, so they are stripped rather than
+        # treated as unresolved; a bounded range is decided by a cached version.
+        record["name"] = _canonical(ranged.group(1))
+        comparators = RANGE_PART.findall(ranged.group(2))
+        available = cache.get(record["name"], [])
+        if not available:
+            record["status"] = "missing"
+            record["reason"] = "no wheel for this project in the given wheel directories"
+            return record
+        for wheel_version, requires_python in available:
+            if not _requires_python_ok(requires_python, RUNNING_PYTHON):
+                continue
+            if all(CMP[op](_version_tuple(wheel_version), _version_tuple(want))
+                   for op, want in comparators):
+                record["version"] = wheel_version
+                record["status"] = "cached"
+                record["reason"] = "cached version satisfies the declared range"
+                return record
+        record["status"] = "version_mismatch"
+        record["reason"] = "no cached version satisfies the declared range"
         return record
-    for wheel_version, requires_python in available:
-        if wheel_version != record["version"]:
-            continue
-        if not _requires_python_ok(requires_python, RUNNING_PYTHON):
-            record["status"] = "unsupported"
-            record["reason"] = "cached wheel Requires-Python is not satisfied by the running interpreter"
-        else:
-            record["status"] = "cached"
-        return record
-    record["status"] = "version_mismatch"
-    record["reason"] = "cached wheel version differs from the declared pin"
+    record["reason"] = _unknown_reason(requirement)
     return record
 
 
-def audit(submission: Path, wheels: list[Path]) -> dict:
-    """Audit the declared pins of a staged submission against local wheels."""
-    root = _resolve_root(Path(submission))
-    cache = _build_cache([Path(item) for item in wheels])
-    declared = [_classify(source, requirement, note, cache)
-                for source, requirement, note in _collect_declarations(root)]
+def audit(submission: Path, wheels: list[Path], target_python: str | None = None) -> dict:
+    """Audit declared pins against local wheels for the TARGET interpreter.
+
+    ``target_python`` matters because the host running the audit is not the
+    image that installs the wheels (a cp311 wheel set must not be judged
+    against a 3.10 host).
+    """
+    global RUNNING_PYTHON
+    previous = RUNNING_PYTHON
+    if target_python:
+        if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", target_python):
+            raise AuditError("target python must look like 3.11")
+        RUNNING_PYTHON = target_python
+    try:
+        root = _resolve_root(Path(submission))
+        cache = _build_cache([Path(item) for item in wheels])
+        declared = [_classify(source, requirement, note, cache)
+                    for source, requirement, note in _collect_declarations(root)]
+    finally:
+        RUNNING_PYTHON = previous
     summary = {"declared": len(declared)}
-    for status in ("cached", "missing", "version_mismatch", "unsupported", "unknown"):
+    for status in ("cached", "missing", "version_mismatch", "unsupported", "unknown", "skipped"):
         summary[status] = sum(1 for item in declared if item["status"] == status)
+    blocking = [item for item in declared if item["status"] != "skipped"]
     return {"scope": "minimax", "declared": declared, "summary": summary,
-            "all_pins_cached": bool(declared) and all(item["status"] == "cached" for item in declared),
+            "all_pins_cached": bool(blocking) and all(item["status"] == "cached" for item in blocking),
             "ready": False, "notes": NOTES}
 
 
@@ -269,9 +311,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only dependency pin audit.")
     parser.add_argument("--submission", type=Path, required=True, help="staged task or submission tree")
     parser.add_argument("--wheels", type=Path, action="append", default=[], help="wheel directory (repeatable)")
+    parser.add_argument("--python", dest="target_python", default=None,
+                        help="interpreter version the wheels must satisfy (e.g. 3.11)")
     args = parser.parse_args(argv)
     try:
-        result = audit(args.submission, args.wheels)
+        result = audit(args.submission, args.wheels, args.target_python)
     except AuditError as exc:
         print(json.dumps({"error": str(exc)}, sort_keys=True))
         return 2

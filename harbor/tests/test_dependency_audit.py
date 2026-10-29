@@ -66,8 +66,11 @@ class DependencyAuditTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def audit(self):
-        return audit_module.audit(self.task, [self.wheels])
+    def audit(self, *extra):
+        target = None
+        if extra:
+            target = extra[1]
+        return audit_module.audit(self.task, [self.wheels], target)
 
     def test_exact_pin_is_reported_as_cached(self):
         make_wheel(self.wheels, "numpy", "1.26.4")
@@ -96,17 +99,35 @@ class DependencyAuditTests(unittest.TestCase):
         self.requirements("numpy==1.26.4\n")
         self.assertEqual(self.audit()["declared"][0]["status"], "unsupported")
 
-    def test_markers_ranges_and_extras_stay_unknown(self):
+    def test_markers_ranges_and_extras_are_classified(self):
         self.requirements('torch==2.0.0; python_version < "3.12"\n'
                           "requests>=2.0\n"
                           "rich[jupyter]==13.0\n"
                           "-r other.txt\n")
         result = self.audit()
-        self.assertEqual([item["status"] for item in result["declared"]], ["unknown"] * 4)
+        # Markers and include directives stay undecided; extras select the same
+        # distribution, and an unresolvable range is reported as missing.
+        self.assertEqual([item["status"] for item in result["declared"]],
+                         ["unknown", "missing", "missing", "unknown"])
         reasons = " ".join(item["reason"] for item in result["declared"])
         self.assertIn("marker", reasons)
-        self.assertIn("extras", reasons)
+        self.assertNotIn("extras not resolved", reasons)
         self.assertFalse(result["all_pins_cached"])
+
+    def test_extras_and_ranges_hit_the_same_wheel(self):
+        make_wheel(self.wheels, "powercontext", "1.4.0")
+        make_wheel(self.wheels, "pytest", "8.4.2")
+        self.requirements("powercontext[cli,server,seekdb]==1.4.0\npytest>=8,<9\n")
+        result = self.audit()
+        self.assertEqual([item["status"] for item in result["declared"]], ["cached", "cached"])
+        self.assertEqual(result["declared"][1]["version"], "8.4.2")
+        self.assertTrue(result["all_pins_cached"])
+
+    def test_target_python_is_used_for_requires_python(self):
+        make_wheel(self.wheels, "needs-new-python", "1.0", requires_python=">=3.11")
+        self.requirements("needs-new-python==1.0\n")
+        self.assertEqual(self.audit("--python", "3.11")["declared"][0]["status"], "cached")
+        self.assertEqual(self.audit("--python", "3.10")["declared"][0]["status"], "unsupported")
 
     def test_names_are_canonicalised(self):
         make_wheel(self.wheels, "some-package-name", "1.0")
@@ -124,8 +145,9 @@ class DependencyAuditTests(unittest.TestCase):
             self.assertEqual(result["declared"][0]["status"], "cached")
             self.assertTrue(result["all_pins_cached"])
         else:
-            self.assertEqual(result["declared"][0]["status"], "unknown")
+            self.assertEqual(result["declared"][0]["status"], "skipped")
             self.assertIn("tomllib", result["declared"][0]["reason"])
+            # Nothing was actually decided, so this must not look ready.
             self.assertFalse(result["all_pins_cached"])
 
     def test_setup_py_is_never_executed(self):
@@ -188,7 +210,7 @@ class DependencyAuditTests(unittest.TestCase):
         self.assertEqual(json.loads(buffer.getvalue())["summary"]["missing"], 1)
 
     def test_cli_exits_two_for_unknown_requirements(self):
-        self.requirements("requests>=2.0\n")
+        self.requirements('requests>=2.0; python_version < "3.12"\n')
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             code = audit_module.main(["--submission", str(self.task), "--wheels", str(self.wheels)])

@@ -182,12 +182,11 @@ def run(args, tasks: list[Task]) -> int:
     # A cold dependency closure previously cost 12+ minutes, so make it an
     # explicit decision instead of letting the reviewer discover it live.
     audits = {}
-    if not args.oracle:
+    if not args.oracle and args.wheels:
         for task in tasks:
             try:
                 audits[str(task.task_id)] = dependency_audit.audit(
-                    task.path, [args.wheels]) if args.wheels else {
-                    'all_pins_cached': None, 'summary': {'note': 'no wheel directory supplied'}}
+                    task.path, [args.wheels], args.audit_python)
             except (dependency_audit.AuditError, OSError):
                 audits[str(task.task_id)] = {'all_pins_cached': False,
                                              'summary': {'error': 'audit refused'}}
@@ -224,7 +223,11 @@ def run(args, tasks: list[Task]) -> int:
             found = subprocess.run(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'],
                                    capture_output=True, text=True, timeout=15)
             if found.returncode or found.stdout.strip() != image_id:
-                raise ValueError('prewarmed image tag is absent or changed')
+                detail = (found.stderr or found.stdout or '').strip().splitlines()
+                raise ValueError('prewarmed image tag is absent or changed'
+                                 f' (docker rc={found.returncode}: '
+                                 f'{(detail[0] if detail else "no output")[:120]})'
+                                 f' expected={image_id!r} len={len(found.stdout.strip())}/{len(image_id)}')
     # One supervisor per repo across sessions, plus locks retained per active task.
     with acquire(ROOT / 'workdir/harbor-batch.lock'):
         out = BATCHES / args.batch_id
@@ -358,6 +361,8 @@ def main() -> int:
     p.add_argument('--wait-seconds', type=int, default=60)
     p.add_argument('--wheels', type=Path,
                    help='host wheel directory for the read-only dependency audit')
+    p.add_argument('--audit-python', default='3.11',
+                   help='interpreter version of the trial image the wheels must satisfy')
     p.add_argument('--allow-uncached', action='store_true',
                    help='run even when declared pins are not cached (slower, explicit)')
     p.add_argument('--harbor', type=Path, default=ROOT/'workdir/harbor-tools/harbor/bin/harbor')
@@ -367,6 +372,9 @@ def main() -> int:
         return run(args, load_tasks(args.manifest))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         # Untrusted manifest/paths must not leak embedded secrets through exceptions.
+        if os.environ.get('HARBOR_BATCH_TRACE') == '1':
+            import traceback
+            traceback.print_exc()
         print(f'Batch refused: {type(exc).__name__}; check manifest, lease, resources and executable.')
         return 2
 
