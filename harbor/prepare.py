@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -48,6 +49,15 @@ def snapshot(repo: Path, commit: str, acknowledge_fixture_secrets: bool = False,
         parts = Path(path).parts
         if len(parts) < 2 or parts[0] != "minimax" or any(p in ("..", ".git") for p in parts):
             raise ValueError("invalid scoped file path")
+        if kind == "blob" and mode == "120000":
+            # Materialise a relative symlink only when its target stays inside
+            # minimax/; anything absolute or escaping the scope is refused.
+            target = git(repo, "cat-file", "blob", sha).decode("utf-8", "replace").strip()
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+            if target.startswith("/") or not resolved.startswith("minimax/") or ".." in Path(resolved).parts:
+                raise ValueError("symlink escapes the staged scope")
+            sha = git(repo, "rev-parse", f"{commit}:{resolved}").decode().strip()
+            mode = "100644"
         if kind != "blob" or mode not in {"100644", "100755"}:
             raise ValueError("symlinks/submodules require explicit staging review")
         name = parts[-1].lower()

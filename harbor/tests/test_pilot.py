@@ -69,8 +69,15 @@ class StagingTests(unittest.TestCase):
 
     def test_reject_symlink(self):
         (self.repo / "minimax/link").symlink_to("../../private")
-        with self.assertRaisesRegex(ValueError, "symlinks"):
+        with self.assertRaisesRegex(ValueError, "symlink escapes"):
             prepare.snapshot(self.repo, self.commit_all())
+
+    def test_materialise_in_scope_symlink(self):
+        (self.repo / "minimax/real.py").write_text("VALUE = 1\n")
+        (self.repo / "minimax/alias.py").symlink_to("real.py")
+        files = prepare.snapshot(self.repo, self.commit_all())
+        self.assertEqual(files["minimax/alias.py"][0], b"VALUE = 1\n")
+        self.assertEqual(files["minimax/alias.py"][1], 0o644)
 
     def test_reject_submodule(self):
         self.git("update-index", "--add", "--cacheinfo", f"160000,{self.commit},minimax/submodule")
