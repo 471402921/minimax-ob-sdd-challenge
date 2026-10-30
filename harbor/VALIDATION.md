@@ -87,6 +87,13 @@
   report. No verdict was submitted; the task returns to the queue. The lesson is that
   this submission needs 4 GiB **and** a lease claimed immediately before a >=30 min run,
   not a 20-minute ceiling.
+- The credential heuristic in `prepare.py` produced one verified false positive: a
+  submission vendored the JSON-Schema test suite, whose URI format fixtures contain
+  `http://user:pass@example.com` vectors (10 files, matched by the content regex only;
+  no filename rule fired). Staging was refused by default. An explicit
+  `--acknowledge-fixture-secrets` flag now skips ONLY that content heuristic, still
+  enforces filename and size rules, and records `credential_scan:
+  acknowledged_fixture` in the staged manifest so the exception is auditable.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record

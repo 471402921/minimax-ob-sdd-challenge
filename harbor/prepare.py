@@ -32,7 +32,7 @@ def git(repo: Path, *args: str) -> bytes:
     return proc.stdout
 
 
-def snapshot(repo: Path, commit: str) -> dict[str, tuple[bytes, int]]:
+def snapshot(repo: Path, commit: str, acknowledge_fixture_secrets: bool = False) -> dict[str, tuple[bytes, int]]:
     if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", commit):
         raise ValueError("provide a full 40/64-hex commit SHA")
     if git(repo, "rev-parse", "--verify", commit + "^{commit}").decode().strip().lower() != commit.lower():
@@ -57,7 +57,9 @@ def snapshot(repo: Path, commit: str) -> dict[str, tuple[bytes, int]]:
         if len(result) >= MAX_FILES or size + blob_size > MAX_BYTES:
             raise ValueError("snapshot exceeds pilot size/file limit")
         data = git(repo, "cat-file", "blob", sha)
-        if SECRET.search(data):
+        # An explicit acknowledgement skips only the content heuristic; filename rules
+        # and size bounds still apply, and the exception is recorded in the manifest.
+        if SECRET.search(data) and not acknowledge_fixture_secrets:
             raise ValueError("possible credential in submission; quarantine for human review")
         result[path] = (data, 0o755 if mode == "100755" else 0o644)
         size += len(data)
@@ -69,7 +71,7 @@ def snapshot(repo: Path, commit: str) -> dict[str, tuple[bytes, int]]:
 def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *, synthetic: bool = False,
             base_image: str | None = None, services: bool = False,
             memory_mb: int | None = None, offline_install: bool = False,
-            pip_index: str | None = None) -> Path:
+            pip_index: str | None = None, acknowledge_fixture_secrets: bool = False) -> Path:
     # An immutable local image ID, not an arbitrary registry/tag or Dockerfile fragment.
     if base_image is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", base_image):
         raise ValueError("prewarmed base image must be an immutable local sha256 image ID")
@@ -96,7 +98,7 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
     else:
         if repo is None or commit is None:
             raise ValueError("repo and full commit required")
-        files = snapshot(repo, commit)
+        files = snapshot(repo, commit, acknowledge_fixture_secrets)
     commit = commit.lower()
     name = f"review-{task_id}-{commit[:12]}"
     PRIVATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -137,6 +139,8 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
         manifest = {**identity, "synthetic": synthetic, "auto_callback": False,
                     "runtime_profile": "backend" if services else "light", "base_image": base_image,
                     "offline_install": offline_install,
+                    "credential_scan": ("acknowledged_fixture" if acknowledge_fixture_secrets
+                                        else "strict"),
                     "files": {p: {"sha256": hashlib.sha256(data).hexdigest(), "mode": oct(mode)}
                               for p, (data, mode) in files.items()}}
         (temp / "environment/input").mkdir(exist_ok=True)
@@ -168,6 +172,8 @@ def main() -> int:
                    help="agent environment memory (2048..8192); default 2048, use 4096+ for heavy tasks")
     p.add_argument("--offline-install", action="store_true",
                    help="set PIP_NO_INDEX for a submission whose pins are all cached (fast failure)")
+    p.add_argument("--acknowledge-fixture-secrets", action="store_true",
+                   help="skip ONLY the content heuristic for known test fixtures (recorded in the manifest)")
     p.add_argument("--pip-index", default=None,
                    help="credential-free HTTPS index for uncached pins (recorded as an adjustment)")
     args = p.parse_args()
@@ -176,7 +182,8 @@ def main() -> int:
     try:
         print(prepare(args.task_id, args.repo, args.commit, synthetic=args.synthetic,
                       base_image=args.base_image, services=args.services, memory_mb=args.memory_mb,
-                      offline_install=args.offline_install, pip_index=args.pip_index))
+                      offline_install=args.offline_install, pip_index=args.pip_index,
+                      acknowledge_fixture_secrets=args.acknowledge_fixture_secrets))
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         p.exit(2, f"Staging refused: {type(exc).__name__}. Check fixed commit, scope, size and credential policy.\n")
     return 0
