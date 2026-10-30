@@ -94,6 +94,20 @@
   `--acknowledge-fixture-secrets` flag now skips ONLY that content heuristic, still
   enforces filename and size rules, and records `credential_scan:
   acknowledged_fixture` in the staged manifest so the exception is auditable.
+- `batch5big-run` (2026-10-30) combined the retried large task with four new ones:
+  5/5 reports valid, wall clock ~25 min at 5 concurrent. Verdicts: 4 pass, 1 fail
+  (`47216911` — documented server-mode `sddctx init` fails on a fresh database with
+  MySQL 1049 because the code connects before creating the schema; its model record
+  also reports `elapsed_ms: 0` with usage taken from an unrelated session log).
+- `47219174` (668 files, 458 tests, mostly a vendored JSON-Schema suite) was reviewed
+  directly by the operator instead of a Harbor trial, after the credential heuristic
+  quarantined it and the lease setup left no room for a queued run. Reproduced with
+  Python 3.11 and its exact pinned wheels: 82 module tests, `init` ingesting
+  32 specs / 155 code / 366 tests into an embedded seekdb, PowerContext state save ->
+  server restart -> `show-progress` returning `complete` in a new process, and a
+  red/green check where reverting `target-project.diff` failed all 10 target tests and
+  reapplying passed all 10 with the 1 regression test unchanged. The live MiniMax call
+  was not replayed; the supplied record is file-level consistent but is not proof.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record
