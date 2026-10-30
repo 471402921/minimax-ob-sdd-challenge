@@ -125,6 +125,23 @@
   is a report-format defect, not a functional one. Its pinned PowerContext
   `1.2.0.dev0` source commit needs a container runtime that the image lacks, so the
   released 1.4.0 was substituted and disclosed.
+- 48-way readiness (2026-10-30): Docker's default address pool only supports ~15 compose
+  networks, so 23 concurrent trials failed at network creation. Fixing it requires the
+  plural daemon key `default-address-pools` (base 10.0.0.0/8, size 24) and a dockerd
+  restart; after that 60 consecutive networks were created and the subnet moved to
+  10.0.1.0/24. The singular key is silently ignored.
+- `batch44-run` exercised 44 concurrent trials plus a separate 2-trial batch
+  (`env2-run`, distinct `--lock-name`) concurrently, i.e. 46 live trials. All 46
+  completed; the auto-submit watcher passed 24 clean reports, 21 were reviewed by a
+  person and 2 were failed (`47222805` state persisted only to local files, never
+  through PowerContext; `47223057` probes APIs absent from powercontext 1.4.0 and
+  always degrades to a local JSON backend, and admits the applied patch was
+  hand-written).
+- Small concurrent batches need `--min-disk-gib` when a large batch already holds
+  disk; the default 150 GiB floor is a policy default, not a measurement.
+- `repo_fetch.py` now strips a leading `git clone ` wrapper from `gitRepo` (some
+  contestants paste the whole shell command); `47222636` matched that pattern and was
+  reported as error/failMsg=4 because a fetch_failed task has no evidence to score.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record

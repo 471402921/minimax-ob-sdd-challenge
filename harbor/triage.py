@@ -196,7 +196,9 @@ def main(argv: list[str] | None = None) -> int:
                             'why': str(exc), 'reasons': [str(exc)]})
     for item in results:
         print(json.dumps(item, ensure_ascii=False, sort_keys=True))
-    candidates = [r for r in results if r['classification'] == 'auto_pass_candidate']
+    already = submitted_records()
+    candidates = [r for r in results if r['classification'] == 'auto_pass_candidate'
+                  and r['task_id'] not in already]
     print(f'\nsummary: {len(results)} reports, {len(candidates)} auto-pass candidates, '
           f'{len(results) - len(candidates)} need a human', file=sys.stderr)
     if args.compare_submitted:

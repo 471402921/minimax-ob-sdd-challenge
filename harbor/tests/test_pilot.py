@@ -85,6 +85,18 @@ class StagingTests(unittest.TestCase):
             prepare.snapshot(self.repo, self.commit_all())
         self.assertNotIn(sentinel, str(cm.exception))
 
+    def test_acknowledge_secret_filenames_is_explicit_and_recorded(self):
+        (self.repo / "minimax/.env").write_text("PLACEHOLDER=fixture")
+        commit = self.commit_all()
+        with self.assertRaisesRegex(ValueError, "credential-like"):
+            prepare.snapshot(self.repo, commit)
+        files = prepare.snapshot(self.repo, commit, acknowledge_secret_files=True)
+        self.assertIn("minimax/.env", files)
+        with patch.object(prepare, "PRIVATE_ROOT", self.root / "private"):
+            task = prepare.prepare(32, self.repo, commit, acknowledge_secret_files=True)
+            manifest = json.loads((task / "environment/input/manifest.json").read_text())
+        self.assertEqual(manifest["credential_scan"], "acknowledged_secret_files")
+
     def test_acknowledge_fixture_secret_is_explicit_and_recorded(self):
         # JSON-Schema URI fixtures legitimately contain user:pass@host vectors.
         (self.repo / "minimax/fixture.json").write_text(

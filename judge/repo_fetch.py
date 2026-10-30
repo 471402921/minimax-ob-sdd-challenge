@@ -83,6 +83,12 @@ def parse_repo_url(raw_url: str) -> RepoCredentials:
     raw_url = (raw_url or "").strip()
     if not raw_url:
         raise RepoFetchError("gitRepo 为空", 4)
+    # Contestants sometimes paste a whole shell command ("git clone URL").
+    # Strip that wrapper before parsing; the URL itself is unchanged.
+    for prefix in ("git clone ", "git clone --recurse-submodules "):
+        if raw_url.startswith(prefix):
+            raw_url = raw_url[len(prefix):].strip()
+            break
 
     parsed = urlparse(raw_url)
     if parsed.scheme not in {"http", "https"}:

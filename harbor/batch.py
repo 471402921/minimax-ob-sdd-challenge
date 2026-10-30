@@ -25,7 +25,7 @@ from run_pilot import ROOT, environment, command
 from resources import AdmissionPolicy, capture
 import dependency_audit
 
-MAX_TRIALS = 8
+MAX_TRIALS = 64
 MAX_BACKENDS = 2
 PRIVATE = ROOT / 'workdir/harbor'
 BATCHES = ROOT / 'runs/harbor-batches'
@@ -165,18 +165,22 @@ def signal_group(proc: subprocess.Popen, sig: int) -> None:
 
 def run(args, tasks: list[Task]) -> int:
     if not 1 <= args.trials <= MAX_TRIALS or not 1 <= args.backends <= MAX_BACKENDS:
-        raise ValueError('hard caps: 8 trials, 2 backend trials')
+        raise ValueError('hard caps: 64 trials, 2 backend trials')
     if not 0 <= args.wait_seconds <= 300:
         raise ValueError('wait budget must be 0..300 seconds; never preclaim a long queue')
     if not 60 <= args.timeout <= 2700:
         raise ValueError('wall timeout must be 60..2700 seconds')
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,60}', args.batch_id):
         raise ValueError('unsafe batch id')
+    lock_name = getattr(args, 'lock_name', 'harbor-batch.lock')
+    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,60}', lock_name):
+        raise ValueError('unsafe lock name')
     for task in tasks:
         check_lease(task, args.timeout + 900)
         if args.oracle and not task.synthetic:
             raise ValueError('oracle is synthetic-only')
-    policy = AdmissionPolicy()
+    policy = (AdmissionPolicy(min_disk_gib=args.min_disk_gib)
+              if getattr(args, 'min_disk_gib', None) is not None else AdmissionPolicy())
     snapshot = capture(ROOT)
     reasons = policy.evaluate(snapshot)
     # A cold dependency closure previously cost 12+ minutes, so make it an
@@ -229,7 +233,7 @@ def run(args, tasks: list[Task]) -> int:
                                  f'{(detail[0] if detail else "no output")[:120]})'
                                  f' expected={image_id!r} len={len(found.stdout.strip())}/{len(image_id)}')
     # One supervisor per repo across sessions, plus locks retained per active task.
-    with acquire(ROOT / 'workdir/harbor-batch.lock'):
+    with acquire(ROOT / 'workdir' / lock_name):
         out = BATCHES / args.batch_id
         out.mkdir(parents=True, mode=0o700, exist_ok=False)
         atomic(out / 'plan.json', plan)
@@ -365,6 +369,10 @@ def main() -> int:
                    help='interpreter version of the trial image the wheels must satisfy')
     p.add_argument('--allow-uncached', action='store_true',
                    help='run even when declared pins are not cached (slower, explicit)')
+    p.add_argument('--min-disk-gib', type=float, default=None,
+                   help='explicit disk floor for this batch (default policy: 150 GiB)')
+    p.add_argument('--lock-name', default='harbor-batch.lock',
+                   help='separate supervisors may use distinct lock files')
     p.add_argument('--harbor', type=Path, default=ROOT/'workdir/harbor-tools/harbor/bin/harbor')
     args = p.parse_args()
     os.umask(0o077)

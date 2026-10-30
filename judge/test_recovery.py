@@ -15,6 +15,18 @@ import repo_fetch
 import review
 
 
+class RepoUrlParsingTests(unittest.TestCase):
+    def test_strips_git_clone_prefix(self):
+        creds = repo_fetch.parse_repo_url("git clone https://u:p@github.com/o/r")
+        self.assertEqual(creds.clean_url, "https://github.com/o/r")
+        self.assertEqual(creds.username, "u")
+        self.assertTrue(creds.pat)
+
+    def test_still_rejects_ssh(self):
+        with self.assertRaises(repo_fetch.RepoFetchError):
+            repo_fetch.parse_repo_url("git clone git@github.com:o/r.git")
+
+
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
