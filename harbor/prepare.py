@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 PRIVATE_ROOT = HERE.parent / "workdir" / "harbor"
@@ -67,7 +68,8 @@ def snapshot(repo: Path, commit: str) -> dict[str, tuple[bytes, int]]:
 
 def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *, synthetic: bool = False,
             base_image: str | None = None, services: bool = False,
-            memory_mb: int | None = None, offline_install: bool = False) -> Path:
+            memory_mb: int | None = None, offline_install: bool = False,
+            pip_index: str | None = None) -> Path:
     # An immutable local image ID, not an arbitrary registry/tag or Dockerfile fragment.
     if base_image is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", base_image):
         raise ValueError("prewarmed base image must be an immutable local sha256 image ID")
@@ -75,6 +77,12 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
         raise ValueError("services require an explicitly prewarmed image")
     if offline_install and not base_image:
         raise ValueError("offline install requires the prewarmed wheel image")
+    if pip_index is not None:
+        parsed = urlsplit(pip_index)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("pip index must be a credential-free HTTPS URL")
+    if offline_install and pip_index:
+        raise ValueError("offline install and a pip index are contradictory")
     # 2 GiB is the measured floor for a real submission (install + service +
     # sample). 1 GiB completed but hit the cgroup limit thousands of times.
     memory_mb = memory_mb if memory_mb is not None else 2048
@@ -111,6 +119,8 @@ def prepare(task_id: int, repo: Path | None = None, commit: str | None = None, *
             # so the reviewer adapts instead of waiting.
             offline_env = ('ENV PIP_NO_INDEX=1 PIP_TIMEOUT=5 PIP_RETRIES=0\n'
                            if offline_install else '')
+            if pip_index:
+                offline_env += f'ENV PIP_INDEX_URL={pip_index} PIP_TIMEOUT=60 PIP_RETRIES=2\n'
             (temp / 'environment/Dockerfile').write_text(
                 f'FROM {local_tag}\nUSER root\n' + offline_env + snapshot_part)
             (temp / 'environment/input').mkdir(exist_ok=True)
@@ -158,13 +168,15 @@ def main() -> int:
                    help="agent environment memory (2048..8192); default 2048, use 4096+ for heavy tasks")
     p.add_argument("--offline-install", action="store_true",
                    help="set PIP_NO_INDEX for a submission whose pins are all cached (fast failure)")
+    p.add_argument("--pip-index", default=None,
+                   help="credential-free HTTPS index for uncached pins (recorded as an adjustment)")
     args = p.parse_args()
     if args.synthetic and (args.repo or args.commit):
         p.error("synthetic cannot be combined with repo/commit")
     try:
         print(prepare(args.task_id, args.repo, args.commit, synthetic=args.synthetic,
                       base_image=args.base_image, services=args.services, memory_mb=args.memory_mb,
-                      offline_install=args.offline_install))
+                      offline_install=args.offline_install, pip_index=args.pip_index))
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         p.exit(2, f"Staging refused: {type(exc).__name__}. Check fixed commit, scope, size and credential policy.\n")
     return 0

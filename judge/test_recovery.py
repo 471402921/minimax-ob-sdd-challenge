@@ -118,6 +118,39 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(store.load(self.work, self.pending), self.url)
         review._require_ack({'code': 200, 'data': {'taskId': 8}}, 8)
 
+    def test_missing_branch_falls_back_to_exact_commit(self):
+        calls = []
+        def run(args, *, cwd, env, timeout, fail_msg):
+            calls.append(args)
+            if args[0] == 'clone':
+                raise repo_fetch.RepoFetchError(
+                    "fatal: Remote branch codex/x not found in upstream origin", 4)
+            if args[0] == 'init':
+                Path(args[-1]).mkdir(parents=True, exist_ok=True)
+            if 'fetch' in args:
+                return __import__('subprocess').CompletedProcess(args, 0, stdout='', stderr='')
+            if 'rev-parse' in args:
+                return __import__('subprocess').CompletedProcess(args, 0, stdout='a'*40+'\n', stderr='')
+            return __import__('subprocess').CompletedProcess(args, 0, stdout='', stderr='')
+        with patch.object(repo_fetch, '_run_git', run):
+            out = repo_fetch.clone_and_checkout(self.url, self.work/'nb', branch='codex/x',
+                                                commit_id='a'*40)
+        fetch = [c for c in calls if 'fetch' in c][0]
+        self.assertIn('a'*40, fetch)
+        self.assertEqual(out.commit_id, 'a'*40)
+        self.assertEqual(out.branch, 'codex/x')
+        checkout = [c for c in calls if 'checkout' in c][0]
+        self.assertIn('--detach', checkout)
+
+    def test_missing_branch_without_sha_still_reports_missing_ref(self):
+        def run(args, *, cwd, env, timeout, fail_msg):
+            raise repo_fetch.RepoFetchError(
+                "fatal: Remote branch gone not found in upstream origin", 4)
+        with patch.object(repo_fetch, '_run_git', run):
+            with self.assertRaises(repo_fetch.RepoFetchError) as cm:
+                repo_fetch.clone_and_checkout(self.url, self.work/'nb2', branch='gone', commit_id=None)
+        self.assertEqual(cm.exception.fail_msg, 1)
+
     def test_fetch_auth_error_is_not_missing_commit(self):
         def run(args, *, cwd, env, timeout, fail_msg):
             if args[0] == 'clone': Path(args[-1]).mkdir()

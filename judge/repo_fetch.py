@@ -159,6 +159,33 @@ def _run_git(
     return proc
 
 
+def _checkout_exact_commit(creds, dest: Path, env: dict[str, str], branch: str,
+                           commit: str, timeout: float) -> "Checkout":
+    """Fetch one exact commit when the requested branch no longer exists.
+
+    Used only when the platform supplied a full SHA. The branch name is kept as
+    recorded so the callback still echoes the platform version, while the tree
+    comes from the exact object, never from whatever HEAD happens to be.
+    """
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _run_git(["init", "-q", str(dest)], cwd=None, env=env, timeout=60, fail_msg=4)
+    try:
+        _run_git(["-C", str(dest), "fetch", "--depth=1", "--no-tags", "--",
+                  creds.clean_url, commit], cwd=None, env=env, timeout=timeout, fail_msg=4)
+    except RepoFetchError as exc:
+        if _looks_like_timeout(exc):
+            raise RepoFetchError(str(exc), 5) from exc
+        raise RepoFetchError("指定 commit 无法取得（分支缺失且 SHA 不可获取）", 2) from exc
+    fetched = _run_git(["-C", str(dest), "rev-parse", "FETCH_HEAD"], cwd=None, env=env,
+                       timeout=60, fail_msg=2).stdout.strip().lower()
+    if fetched != commit:
+        raise RepoFetchError("取回的 commit 与平台指定值不一致", 2)
+    _run_git(["-C", str(dest), "checkout", "--detach", fetched], cwd=None, env=env,
+             timeout=120, fail_msg=6)
+    return Checkout(path=dest, branch=branch, commit_id=fetched)
+
+
 def clone_and_checkout(
     raw_git_repo: str,
     dest: Path,
@@ -200,8 +227,13 @@ def clone_and_checkout(
             # 先按 failMsg=4（clone 失败）兜底；超时与分支缺失在下面按 stderr 细分
             _run_git(clone_args, cwd=None, env=env, timeout=clone_timeout, fail_msg=4)
         except RepoFetchError as exc:
-            # 分支不存在时 git 也会 clone 失败，靠 stderr 区分出 failMsg=1
+            # 分支不存在时 git 也会 clone 失败，靠 stderr 区分出 failMsg=1。
+            # 平台指定的 branch 可能已被选手删除/改名，但完整 commit 仍可通过
+            # SHA 直接取到：此时按精确对象回退，绝不用 HEAD 替代。
             if branch and _looks_like_missing_ref(exc):
+                if commit_id and _FULL_SHA_RE.fullmatch(commit_id.lower()):
+                    return _checkout_exact_commit(creds, dest, env, branch, commit_id.lower(),
+                                                  clone_timeout)
                 raise RepoFetchError(f"branch 未找到: {branch}", 1) from exc
             if _looks_like_timeout(exc):
                 raise RepoFetchError(str(exc), 5) from exc

@@ -21,6 +21,12 @@ If required infrastructure is unavailable, mark affected checks `blocked` or
 `not_run`; do not silently substitute fakes and label them live.
 
 Offline dependency wheels are preloaded (`PIP_FIND_LINKS=/opt/wheels/player`).
+If the submission needs a real seekdb/MySQL endpoint and no container runtime
+exists, start the bundled server instead of marking the check blocked:
+`BIN=$(python3 -c "import pylibseekdb,pathlib;print(pathlib.Path(pylibseekdb.__file__).parent/'seekdb')")`
+then `$BIN --nodaemon --port 2881 --base-dir /tmp/sdb --data-dir /tmp/sdb/store`,
+set a throwaway root password, and write host/port/password into the submission's
+`.env`. Verified to serve `5.7.25-OceanBase seekdb-v1.4.0.0`.
 Prefer the submission's documented setup scripts exactly as written. When the
 submission starts and owns its PowerContext service, use that instead of any
 evaluator-provided endpoint; an evaluator service on port 18000 is only a

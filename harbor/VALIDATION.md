@@ -30,6 +30,32 @@
   although every pin was cached. Mitigations landed: optional `PIP_NO_INDEX` when the
   audit passes, and a single hashed reusable venv instead of 6-8 reinstalls. Not yet
   re-measured on a new batch.
+- 6-way real batch `batch6-run` + 2 recovered trials (2026-10-29): 8/8 completed, 0 errors,
+  `report_valid=1` on every trial. Per-trial wall clock 4.6-10.3 min (median ~6.6) at six
+  concurrent with 2 GiB each; the 6-task batch finished in about 10.3 min (~35 tasks/hour
+  for that wave). No trial consumed the full 240 s install budget.
+- Two fetches initially failed and were recovered **without re-claiming**: one platform
+  branch had been deleted (the exact commit was fetched by SHA after a code fix in
+  `repo_fetch.py`), one `gitRepo` field concatenated a GitHub PAT with the URL for a
+  private repo (access reconstructed from the task's own credential; the local receipt
+  copy was then scrubbed). Both recovered on the original lease.
+- `47216546` was reported `database: blocked` only because the sandbox had no container
+  runtime. Re-verification started the bundled `seekdb` binary (5.7.25-OceanBase
+  seekdb-v1.4.0.0) and ran the documented `init-db --reset` / `ingest` /
+  `build-context` successfully, so the block was evaluator-side. Its range pin
+  (`powercontext[builtin]>=1.2.0`) resolves to 1.4.x today, where its pipeline is
+  rejected; only the README's 1.2.0 works. Disclosed, judged pass on the documented
+  version.
+- `47216316` was reported `code_change: uncertain`; an independent rerun against the
+  referenced baseline commit produced 4 failed / 3 passed there versus 7 passed at HEAD
+  with the same tests, i.e. the change is effective. It still failed overall: no
+  dependency declaration at all and imports (`MemoryCitation`, `GetMemoryRequest`)
+  that no published powercontext (1.0.0rc2-1.4.1) exports.
+- One submission hit a proxy error during callback; the identical request was retried
+  unchanged and acknowledged. No verdict or message was altered between attempts.
+- Dependency snapshot caveat: the wheel set is pinned at powercontext 1.4.0 while PyPI
+  already publishes 1.4.1, so range-pinned submissions are evaluated against a slightly
+  older release than pip would choose today. See the runner document's version policy.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record

@@ -70,7 +70,16 @@ report-validator reward with a competition score.
    - context: inspect source citations and exercise specification reimport if the
      submitted example includes it; confirm current content, not stale content;
    - database: use a real seekdb/OceanBase backend and show that its query results
-     enter context; distinguish mock tests from live-backend evidence;
+     enter context; distinguish mock tests from live-backend evidence. A missing
+     container runtime is NOT a reason to mark this blocked: the preloaded wheel
+     ships a server binary, so start a trial-local instance yourself, e.g.
+     `BIN=$(python3 -c "import pylibseekdb,pathlib;print(pathlib.Path(pylibseekdb.__file__).parent/'seekdb')")`,
+     then `$BIN --nodaemon --port 2881 --base-dir /tmp/sdb --data-dir /tmp/sdb/store`,
+     wait for the port, set a throwaway root password with pymysql, and put the
+     port/password/database into the submission's `.env`. Verified 2026-10-29:
+     this yields `5.7.25-OceanBase seekdb-v1.4.0.0` and lets `init-db`/`ingest`/
+     `build-context` run without Docker. Only mark blocked if the binary itself
+     cannot start; record the port and password location as an adjustment;
    - state: save a unique task state, exit the process, recover it in a new process
      through PowerContext, and demonstrate its use; remove the SCRATCH local mirror
      before the second process to rule out fallback, and run a bad-scope negative

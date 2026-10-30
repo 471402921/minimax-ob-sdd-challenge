@@ -28,8 +28,8 @@ BATCH="$2"
 WHEELS="${WHEELS:-$ROOT/workdir/wheelhouse-pc140}"
 TRIALS="${TRIALS:-1}"
 BACKENDS="${BACKENDS:-1}"
-if [[ ! "$TRIALS" =~ ^[1-4]$ || ! "$BACKENDS" =~ ^[1-2]$ ]]; then
-  echo 'TRIALS must be 1..4 and BACKENDS 1..2' >&2; exit 2
+if [[ ! "$TRIALS" =~ ^[1-6]$ || ! "$BACKENDS" =~ ^[1-2]$ ]]; then
+  echo 'TRIALS must be 1..6 and BACKENDS 1..2' >&2; exit 2
 fi
 EXTRA=()
 # Cold installs can exceed the 10-minute target, so they must be deliberate.

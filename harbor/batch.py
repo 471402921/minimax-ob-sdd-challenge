@@ -25,7 +25,7 @@ from run_pilot import ROOT, environment, command
 from resources import AdmissionPolicy, capture
 import dependency_audit
 
-MAX_TRIALS = 4
+MAX_TRIALS = 6
 MAX_BACKENDS = 2
 PRIVATE = ROOT / 'workdir/harbor'
 BATCHES = ROOT / 'runs/harbor-batches'
@@ -165,7 +165,7 @@ def signal_group(proc: subprocess.Popen, sig: int) -> None:
 
 def run(args, tasks: list[Task]) -> int:
     if not 1 <= args.trials <= MAX_TRIALS or not 1 <= args.backends <= MAX_BACKENDS:
-        raise ValueError('hard caps: 4 trials, 2 backend trials')
+        raise ValueError('hard caps: 6 trials, 2 backend trials')
     if not 0 <= args.wait_seconds <= 300:
         raise ValueError('wait budget must be 0..300 seconds; never preclaim a long queue')
     if not 60 <= args.timeout <= 2700:
@@ -280,14 +280,14 @@ def run(args, tasks: list[Task]) -> int:
                     while pending:
                         state['tasks'][str(pending.popleft().task_id)] = {'status': 'not_started_cancelled'}
                 # Count reservation rather than relying only on lagging MemAvailable.
-                reserved = sum(6 if x['task'].profile == 'backend' else 4 for x in active)
+                reserved = sum(4 if x['task'].profile == 'backend' else 3 for x in active)
                 baseline_budget = max(0, float(base_available or 0) - 16)  # 12 host + 4 control/verifier
                 if pending and not stop[0] and not reasons and len(active) < args.trials:
                     heavy = sum(x['task'].profile == 'backend' for x in active)
                     selected = next((t for t in pending if
                         (t.profile != 'backend' or heavy < args.backends)
-                        and reserved + (6 if t.profile == 'backend' else 4) <= baseline_budget
-                        and asdict(snap)['memory_available_gib'] - (6 if t.profile == 'backend' else 4) >= 16), None)
+                        and reserved + (4 if t.profile == 'backend' else 3) <= baseline_budget
+                        and asdict(snap)['memory_available_gib'] - (4 if t.profile == 'backend' else 3) >= 12), None)
                     if selected:
                         pending.remove(selected)
                         task = selected
