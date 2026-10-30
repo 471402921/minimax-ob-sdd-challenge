@@ -118,6 +118,13 @@
   sources `.env`, so the documented one-shot path aborts on an unbound
   `POWERCONTEXT_URL`, while every individual CLI step, the red/green suite and the
   cross-process state round-trip reproduced.
+- `batch7z-run` (2026-10-30): 7/7 completed with 0 errors in ~23 min at 7 concurrent
+  (three 4 GiB tasks including a 394-file submission). All seven were judged pass.
+  `47219954` could not be auto-passed because its report emitted `task_id` as a string,
+  so the deterministic gate refused it even though five dimensions were verified; that
+  is a report-format defect, not a functional one. Its pinned PowerContext
+  `1.2.0.dev0` source commit needs a container runtime that the image lacks, so the
+  released 1.4.0 was substituted and disclosed.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record
