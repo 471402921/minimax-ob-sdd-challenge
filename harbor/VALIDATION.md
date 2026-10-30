@@ -108,6 +108,16 @@
   red/green check where reverting `target-project.diff` failed all 10 target tests and
   reapplying passed all 10 with the 1 regression test unchanged. The live MiniMax call
   was not replayed; the supplied record is file-level consistent but is not proof.
+- `batch7y-run` (2026-10-30): 7/7 reports valid in 19 min at 7 concurrent (3 tasks at
+  4 GiB, 4 at 2 GiB, one staged through the fixture-credential acknowledgement).
+  Verdicts: 6 pass, 1 fail (`47219307`: its client reads `hit["text"]` while
+  powercontext 1.4.0 returns `hit["memory"]["text"]`, `cmd_context` fills state only
+  from the local mirror, and its shipped `pc_scope_id.txt` points at the author's
+  scope so `state save` aborts with an unhandled 404 on a fresh server).
+- `47219528` passed with a disclosed packaging defect: `scripts/run_e2e.sh` never
+  sources `.env`, so the documented one-shot path aborts on an unbound
+  `POWERCONTEXT_URL`, while every individual CLI step, the red/green suite and the
+  cross-process state round-trip reproduced.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record
