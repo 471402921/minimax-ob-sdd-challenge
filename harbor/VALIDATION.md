@@ -78,6 +78,15 @@
   the default guard. With explicit operator authorization they were retried unchanged
   under `--allow-expired`; all five were acknowledged, so the platform had not
   reassigned them. One retry hit a proxy error and was resent identically.
+- `47216911` was re-claimed after its first lease expired and reached the same commit
+  (`f9bd19bf`). It was then run three times: the first at 2 GiB sat at 1.81/2.0 GiB with
+  2549 cgroup `max` events and heavy CPU throttling for 14 min without a report; a
+  4 GiB rerun was clean (no `max` events) but its 20-minute ceiling was too short.
+  139 bash calls at roughly 5 s per model turn had not reached the report stage, and the
+  deadline produced only a runtime_guard infrastructure checkpoint, not a substantive
+  report. No verdict was submitted; the task returns to the queue. The lesson is that
+  this submission needs 4 GiB **and** a lease claimed immediately before a >=30 min run,
+  not a 20-minute ceiling.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record
