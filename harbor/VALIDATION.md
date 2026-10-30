@@ -56,6 +56,28 @@
 - Dependency snapshot caveat: the wheel set is pinned at powercontext 1.4.0 while PyPI
   already publishes 1.4.1, so range-pinned submissions are evaluated against a slightly
   older release than pip would choose today. See the runner document's version policy.
+- 8-way batch `batch8-run-b` (2026-10-30): 8 tasks claimed and staged, 7 executed with
+  exit 0 and 0 errors, 1 (`47216911`) never started. Admission allows only
+  `base_available - 16` GiB of reservations; at 35 GiB available and a 3 GiB light
+  reservation that is 7 concurrent trials, so the eighth waited. By the time a slot
+  freed, its lease no longer covered `timeout + 900 s`, and the launcher refused it
+  as `not_started` instead of oversubscribing. Observed container peaks were below
+  1 GiB each, so the reservation is conservative; it was not lowered mid-batch.
+- Wall clock for that batch was about 28 min (slowest trial exceeded 20 min), versus
+  roughly 10 min for the 6-way batch. Concurrency beyond 7 needs both a higher
+  admission budget and a longer lease, not just a bigger `--trials`.
+- Triage on the 7 reports: 3 auto-pass candidates, 4 human. Verdicts: 6 pass, 1 fail
+  (`47217889`: the documented one-command acceptance script applies a patch file that
+  is absent from the commit, RUNBOOK commands hardcode the author's home directory and
+  silently import zero specs, and the state client imports symbols only powercontext
+  1.2.0 exports while pinning nothing).
+- `47217673` was judged pass with `code_change: blocked`: the image has no JDK/Maven and
+  the install/tests budgets were not bypassed, so the Java before/after could not run;
+  the patch chain, regression content and model records were verified statically.
+- Five callbacks first arrived seconds past the platform deadline and were refused by
+  the default guard. With explicit operator authorization they were retried unchanged
+  under `--allow-expired`; all five were acknowledged, so the platform had not
+  reassigned them. One retry hit a proxy error and was resent identically.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record

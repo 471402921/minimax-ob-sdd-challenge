@@ -25,7 +25,7 @@ from run_pilot import ROOT, environment, command
 from resources import AdmissionPolicy, capture
 import dependency_audit
 
-MAX_TRIALS = 6
+MAX_TRIALS = 8
 MAX_BACKENDS = 2
 PRIVATE = ROOT / 'workdir/harbor'
 BATCHES = ROOT / 'runs/harbor-batches'
@@ -165,7 +165,7 @@ def signal_group(proc: subprocess.Popen, sig: int) -> None:
 
 def run(args, tasks: list[Task]) -> int:
     if not 1 <= args.trials <= MAX_TRIALS or not 1 <= args.backends <= MAX_BACKENDS:
-        raise ValueError('hard caps: 6 trials, 2 backend trials')
+        raise ValueError('hard caps: 8 trials, 2 backend trials')
     if not 0 <= args.wait_seconds <= 300:
         raise ValueError('wait budget must be 0..300 seconds; never preclaim a long queue')
     if not 60 <= args.timeout <= 2700:
