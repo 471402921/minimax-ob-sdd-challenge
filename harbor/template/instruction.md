@@ -20,7 +20,12 @@ proof of the original submission. Record unavoidable environment adjustments.
 If required infrastructure is unavailable, mark affected checks `blocked` or
 `not_run`; do not silently substitute fakes and label them live.
 
-Offline dependency wheels are preloaded (`PIP_FIND_LINKS=/opt/wheels/player`).
+Offline dependency wheels are preloaded (`PIP_FIND_LINKS=/opt/wheels/player`), and the
+image also carries a second interpreter: `python3.12` (plus `pip3.12`) next to the
+default `python3` (3.11). Use 3.12 when the submission pins packages that only publish
+cp312+ wheels (for example `numpy==2.5.x`); the preloaded wheel set is cp311-only, so a
+3.12 environment resolves its packages from the index instead. Ask the submission's
+setup scripts which interpreter they expect rather than assuming 3.11.
 If the submission needs a real seekdb/MySQL endpoint and no container runtime
 exists, start the bundled server instead of marking the check blocked:
 `BIN=$(python3 -c "import pylibseekdb,pathlib;print(pathlib.Path(pylibseekdb.__file__).parent/'seekdb')")`

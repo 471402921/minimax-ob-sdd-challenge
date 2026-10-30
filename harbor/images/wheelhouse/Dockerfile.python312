@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+#
+# Adds a second, independent CPython 3.12 interpreter to the wheel image.
+# Some submissions pin packages that only publish cp312+ wheels (for example
+# numpy 2.5.x); the original image ships 3.11 only, so those pins cannot
+# resolve.
+#
+# A copied /usr/local from the official python:3.12 image keeps the compiled-in
+# prefix /usr/local, so venv/ensurepip look in the wrong place. Use the
+# relocatable python-build-standalone build instead and expose it as
+# python3.12 / pip3.12; python3 (3.11) and the PowerContext venv are untouched.
+ARG BASE=harbor/review-wheels:local
+
+FROM ${BASE}
+
+USER root
+ARG PY312=3.12
+RUN set -eux; \
+    python3 -m pip install --no-cache-dir --disable-pip-version-check -i https://mirrors.aliyun.com/pypi/simple uv; \
+    UV_PYTHON_INSTALL_DIR=/opt/python312 UV_PYTHON_INSTALL_MIRROR=https://registry.npmmirror.com/-/binary/python-build-standalone uv python install "${PY312}"; \
+    PY="$(ls -d /opt/python312/cpython-3.12*/bin/python3.12 | head -1)"; \
+    test -n "${PY}"; \
+    ln -sf "${PY}" /usr/local/bin/python3.12; \
+    ln -sf "$(dirname "${PY}")/pip3.12" /usr/local/bin/pip3.12; \
+    python3 -V; \
+    python3.12 -V; \
+    python3.12 -m venv /tmp/venvcheck; \
+    /tmp/venvcheck/bin/python -c "import sys; print(sys.version)"; \
+    /tmp/venvcheck/bin/pip -V; \
+    rm -rf /tmp/venvcheck; \
+    chmod -R a+rX /opt/python312
+
+USER reviewer
+CMD ["sleep", "infinity"]

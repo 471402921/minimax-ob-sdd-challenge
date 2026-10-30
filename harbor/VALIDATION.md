@@ -142,6 +142,15 @@
 - `repo_fetch.py` now strips a leading `git clone ` wrapper from `gitRepo` (some
   contestants paste the whole shell command); `47222636` matched that pattern and was
   reported as error/failMsg=4 because a fetch_failed task has no evidence to score.
+- Python 3.12 support (2026-10-30): several submissions pin cp312-only wheels
+  (`numpy==2.5.x`), which cannot resolve on the image's 3.11. `Dockerfile.python312`
+  adds a relocatable python-build-standalone 3.12 (`/opt/python312`, exposed as
+  `python3.12`/`pip3.12`) on top of the wheel image; the official `python:3.12-slim`
+  copy was rejected because its compiled-in prefix breaks `venv`/`ensurepip`. Verified:
+  `python3.12 -m venv`, `numpy==2.5.4` install, `powercontext==1.4.1` import, and
+  `python3` still 3.11. New image `sha256:7f5ea413756f...` is tagged
+  `harbor/review-wheels:local` and `harbor/prewarm:sha-7f5ea413...`; the previous
+  3.11-only image is kept as `harbor/review-wheels:py311`.
 - No automatic platform claim/callback. No private artifacts uploaded or committed.
 
 ## Historical 2026-10-28 pilot record

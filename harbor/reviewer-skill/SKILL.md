@@ -69,6 +69,10 @@ report-validator reward with a competition score.
      live model client using evaluator credentials;
    - context: inspect source citations and exercise specification reimport if the
      submitted example includes it; confirm current content, not stale content;
+   - interpreter: the image ships both `python3` (3.11) and `python3.12`. If the
+     submission pins cp312-only wheels (for example `numpy==2.5.x`), build its venv
+     with `python3.12 -m venv`; the preloaded `/opt/wheels/player` set is cp311-only,
+     so 3.12 installs come from the index and must be recorded as an adjustment.
    - database: use a real seekdb/OceanBase backend and show that its query results
      enter context; distinguish mock tests from live-backend evidence. A missing
      container runtime is NOT a reason to mark this blocked: the preloaded wheel
