@@ -19,7 +19,10 @@
   文件模式和每个文件 SHA-256 写入 manifest；实际快照保留可执行位。
 - `reviewer-skill/`：复用本次人工复核流程，明确区分实际复跑、静态检查和选手原始记录。
 - `run_pilot.py`：专用 key 必填，空白 HOME，环境变量白名单；不继承平台/PAT/云密钥/宿主 Pi 配置。
-- `batch.py`：默认只打印计划；`--execute` 才运行，硬上限4个trial/2个backend槽，检查资源、租约、固定快照、任务锁，按进程组监督并保存状态；无自动重试、claim或callback。
+- `wave.py`：领取与暂存并行——一个线程跑 `judge/review.py fetch --yes --allow-multiple`，
+  多个线程立刻 `prepare`，避免把租约耗在串行打包上（2026-10-30 实测：46 条领取 + 45 条暂存约 7 分钟）。
+  产物仍是被忽略的 `workdir/manifest-<tag>.json`；脚本提前校验 `harbor/prewarm:sha-<id>` 存在。
+- `batch.py`：默认只打印计划；`--execute` 才运行，硬上限64个trial/2个backend槽，检查资源、租约、固定快照、任务锁，按进程组监督并保存状态；无自动重试、claim或callback。
 - `resources.py`：只读主机可用内存、磁盘、PSI、CPU和swap计数，核心信号缺失时fail-closed。
 - `prewarm.py` + `images/`：离线依赖、seekdb预检和PowerContext服务预热；基础镜像使用本地不可变sha256 ID，选手快照只在运行时注入。
 - `prewarm_wheels.py`：推荐路径。同一份已解析 wheel 集同时生成服务端 venv 和选手 `PIP_FIND_LINKS`，避免服务端1.2.0/客户端1.4.0 这类版本偏离；断网选手 bootstrap 实测 26 秒。旧 `prewarm.py`（源码装1.2.0）仅供对照。
